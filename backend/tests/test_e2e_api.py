@@ -2,7 +2,7 @@
 API integration tests — require the Docker stack to be running on http://localhost.
 
 Start the stack:
-    docker-compose -f docker-compose.yml -f docker-compose.test.yml up -d
+    docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 Run these tests:
     pytest backend/tests/ -v

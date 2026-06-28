@@ -10,7 +10,7 @@ bash scripts/create_test_fixture.sh
 
 echo ""
 echo "=== [2/5] Starting test stack (Whisper tiny.en) ==="
-docker-compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 echo ""
 echo "=== [3/5] Waiting for backend to be healthy ==="
