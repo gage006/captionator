@@ -1,0 +1,11 @@
+services:
+  backend:
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_PATH=/storage
+      - WHISPER_MODEL=tiny.en
+  worker:
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_PATH=/storage
+      - WHISPER_MODEL=tiny.en

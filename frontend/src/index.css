@@ -1,0 +1,42 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f0f0f;
+  color: #f0f0f0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 8px;
+  border: none;
+  border-radius: 4px;
+  background: #2a2a2a;
+  overflow: hidden;
+}
+
+progress::-webkit-progress-bar {
+  background: #2a2a2a;
+  border-radius: 4px;
+}
+
+progress::-webkit-progress-value {
+  background: #ffffff;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+progress::-moz-progress-bar {
+  background: #ffffff;
+  border-radius: 4px;
+}
