@@ -15,7 +15,7 @@ services:
       - WHISPER_MODEL=base.en
     volumes:
       - ./backend/storage:/storage
-      - whisper_cache:/root/.cache/whisper
+      - whisper_cache:/root/.cache/huggingface
     depends_on:
       - redis
 
@@ -30,7 +30,7 @@ services:
       - WHISPER_MODEL=base.en
     volumes:
       - ./backend/storage:/storage
-      - whisper_cache:/root/.cache/whisper
+      - whisper_cache:/root/.cache/huggingface
     depends_on:
       - redis
 

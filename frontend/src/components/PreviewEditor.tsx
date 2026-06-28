@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { StyleInfo, TranscriptSegment, RenderRequest } from '../types'
 import { sourceVideoUrl } from '../api/client'
 import { StylePicker } from './StylePicker'
@@ -41,6 +41,7 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
   const [stageSize, setStageSize] = useState<{ w: number; h: number } | null>(null)
 
   const stageRef = useRef<HTMLDivElement>(null)
+  const blockRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
 
   const selectedInfo = styles.find((s) => s.id === selectedStyle)
@@ -74,8 +75,13 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
         const dx = (e.clientX - drag.startX) / rect.width
         const dy = (e.clientY - drag.startY) / rect.height
         let nx = clamp(drag.startPos.x + dx, 0.02, 0.98)
-        const ny = clamp(drag.startPos.y + dy, 0.04, 0.98)
         if (Math.abs(nx - 0.5) < SNAP_THRESHOLD) nx = 0.5 // snap to horizontal center
+        // Vertical has no wrap-to-fit, so keep the block fully on screen by
+        // clamping its center against its own measured half-height.
+        const halfH = blockRef.current
+          ? blockRef.current.offsetHeight / 2 / rect.height
+          : 0
+        const ny = clamp(drag.startPos.y + dy, Math.min(halfH, 0.5), Math.max(1 - halfH, 0.5))
         setPosition({ x: nx, y: ny })
       } else {
         const dist = Math.hypot(e.clientX - drag.centerX, e.clientY - drag.centerY)
@@ -143,6 +149,28 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
 
   const atCenter = position.x === 0.5
 
+  // Mirror the right-edge shrink-to-fit onto the left edge: cap the block width to
+  // twice the distance to the nearer side so it squishes (rather than clipping)
+  // against whichever horizontal edge it approaches.
+  const maxWidthFrac = Math.min(0.86, 2 * Math.min(position.x, 1 - position.x))
+
+  // Keep the (already width-capped) block from overflowing the top/bottom as it
+  // grows: if the rendered height exceeds the room available around its center,
+  // shrink the scale to fit. Runs on size/position/style changes — deliberately
+  // not on caption text changes, so playback can't quietly shrink the chosen size.
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    const block = blockRef.current
+    if (!stage || !block) return
+    const stageH = stage.getBoundingClientRect().height
+    if (stageH === 0) return
+    const availH = 2 * Math.min(position.y, 1 - position.y) * stageH
+    const h = block.offsetHeight
+    if (h > availH + 0.5) {
+      setScale((s) => Math.max(0.3, (s * availH) / h))
+    }
+  }, [fontPx, position.x, position.y, stageSize, selectedStyle])
+
   return (
     <div className="preview-editor">
       <div className="preview-stage" ref={stageRef}>
@@ -163,11 +191,13 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
           {dragging && atCenter && <div className="center-guide" />}
           {selectedInfo && fontPx > 0 && (
             <div
+              ref={blockRef}
               className={`caption-block${dragging ? ' dragging' : ''}`}
               style={{
                 left: `${position.x * 100}%`,
                 top: `${position.y * 100}%`,
                 fontSize: `${fontPx}px`,
+                maxWidth: `${maxWidthFrac * 100}%`,
               }}
               onPointerDown={startMove}
               role="button"

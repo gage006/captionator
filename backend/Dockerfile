@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    git \
     espeak-ng \
     fonts-liberation \
     fonts-freefont-ttf \
@@ -13,10 +12,8 @@ WORKDIR /app
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-# Install PyTorch CPU-only to keep image smaller
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-# openai-whisper uses legacy setup.py that imports pkg_resources; skip build isolation
-RUN pip install --no-cache-dir --no-build-isolation openai-whisper==20231117
+# faster-whisper (CTranslate2 backend) replaces torch + openai-whisper: 3-4x faster
+# on CPU via AVX2 int8 kernels, and a much smaller image (no torch wheel).
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/

@@ -60,8 +60,22 @@ def transcribe_video(job_id: str) -> None:
         output_dir = settings.output_path / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _update_job(db, job_id, status="transcribing", step="transcribing", progress=10)
-        result = transcribe(video_path, job.language)
+        _update_job(db, job_id, status="transcribing", step="transcribing", progress=5)
+
+        # Map Whisper's 0..1 decode progress onto 5..95% and persist it as it
+        # climbs, so the frontend's poll sees a real, advancing bar instead of a
+        # stall at a fixed value. Throttle to whole-percent increases to avoid a
+        # DB commit on every tqdm tick.
+        last_pct = 5
+
+        def on_progress(fraction: float) -> None:
+            nonlocal last_pct
+            pct = 5 + int(fraction * 90)
+            if pct > last_pct:
+                last_pct = pct
+                _update_job(db, job_id, progress=pct)
+
+        result = transcribe(video_path, job.language, progress_callback=on_progress)
         segments = _serializable_segments(result["segments"])
 
         # Persist transcript artifacts: SRT + TXT for download, JSON for preview/render.

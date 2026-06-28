@@ -22,7 +22,6 @@ progress {
   border: none;
   border-radius: 4px;
   background: #2a2a2a;
-  overflow: hidden;
 }
 
 progress::-webkit-progress-bar {
@@ -31,12 +30,26 @@ progress::-webkit-progress-bar {
 }
 
 progress::-webkit-progress-value {
-  background: #ffffff;
+  background: #a855f7;
   border-radius: 4px;
   transition: width 0.4s ease;
+  animation: progress-pulse 1.4s ease-in-out infinite;
 }
 
 progress::-moz-progress-bar {
-  background: #ffffff;
+  background: #a855f7;
   border-radius: 4px;
+  animation: progress-pulse 1.4s ease-in-out infinite;
+}
+
+/* Breathing purple glow so the bar reads as "alive" while work is in flight. */
+@keyframes progress-pulse {
+  0%, 100% {
+    background: #a855f7;
+    box-shadow: 0 0 4px rgba(168, 85, 247, 0.5);
+  }
+  50% {
+    background: #c084fc;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.9);
+  }
 }

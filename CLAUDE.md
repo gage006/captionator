@@ -51,7 +51,7 @@ Persistent storage is mounted at `./backend/storage` → `/storage` inside conta
 | Path | Role |
 |------|------|
 | `main.py` | FastAPI app, CORS, router registration, lifespan handler |
-| `config.py` | Settings loaded from `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `CLEANUP_DELAY_SECONDS`) |
+| `config.py` | Settings loaded from `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`) |
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
@@ -62,9 +62,9 @@ Persistent storage is mounted at `./backend/storage` → `/storage` inside conta
 | `routers/styles.py` | `GET /api/styles` — lists caption styles (incl. `base_font_size`) |
 | `tasks/celery_app.py` | Celery app init, broker=Redis, initializes DB on startup |
 | `tasks/pipeline.py` | `transcribe_video` (phase 1) + `render_video` (phase 2); `cleanup_job` deletes a job's files; `sweep_expired_jobs` is the Beat-driven durable cleanup backstop (also reaps abandoned pre-render uploads) |
-| `tasks/transcribe.py` | Whisper transcription (globally cached model), returns segments with word-level timing |
+| `tasks/transcribe.py` | faster-whisper (CTranslate2) transcription (globally cached model), int8 CPU-quantized with VAD; returns segments with word-level timing. Progress driven off each segment's end time vs. audio duration |
 | `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing |
-| `tasks/ffmpeg_burn.py` | Probes video dimensions, burns ASS captions into video via FFmpeg |
+| `tasks/ffmpeg_burn.py` | Probes video dimensions + audio codec, burns ASS captions into video via FFmpeg (re-encodes video; stream-copies audio when already AAC) |
 | `styles/definitions.py` | 9 style templates (Classic, TikTok Bold, Karaoke, Clean Box, Neon, Minimal, Cinematic, + compound Duo Tone & Mixed Weight); `base_font_size()` helper |
 
 ### Processing pipeline (two phases)
@@ -120,3 +120,5 @@ WHISPER_MODEL=base.en
 ```
 
 `WHISPER_MODEL` can be changed to `small`, `medium`, `large`, etc. — larger models are more accurate but slower and require more RAM. The model is downloaded on first use and cached in a Docker volume (`whisper_cache`).
+
+Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count. Because faster-whisper is so much quicker, bumping `WHISPER_MODEL` to `small.en` lands near the old `base.en` wall-clock at higher accuracy.
