@@ -4,6 +4,7 @@ const STEPS: JobStep[] = ['uploading', 'transcribing', 'styling', 'burning']
 const STEP_LABELS: Record<JobStep, string> = {
   uploading: 'Uploading',
   transcribing: 'Transcribing audio',
+  preview_ready: 'Ready to edit',
   styling: 'Generating captions',
   burning: 'Burning into video',
   done: 'Complete',
