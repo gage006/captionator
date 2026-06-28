@@ -19,9 +19,10 @@ The `backend`, `frontend`, and `nginx` services declare both an `image:` (GHCR) 
 ```bash
 cd frontend
 npm install
-npm run dev      # Vite dev server on port 3000
-npm run build    # TypeScript check + production build
+npm run build    # TypeScript check + production build → dist/
 ```
+
+There is no dev server. The frontend ships as a static build served by nginx (see `frontend/Dockerfile`), so the running app is always the exact production artifact. Iterate by rebuilding the image (`docker compose up --build`).
 
 ### Backend (standalone, requires Redis running)
 ```bash
@@ -37,7 +38,7 @@ There are no test suites configured for either frontend or backend.
 
 Six Docker containers behind an Nginx reverse proxy (port 80):
 - **nginx** — routes `/api/*` → `backend:8000`, all other paths → `frontend:3000`; 2 GB upload limit, 600s timeouts
-- **frontend** — React + TypeScript + Vite dev server
+- **frontend** — React + TypeScript static build (Vite), served by nginx
 - **backend** — FastAPI, exposes REST API, writes jobs to SQLite, enqueues Celery tasks
 - **worker** — Celery consumer, runs the video processing pipeline
 - **beat** — Celery Beat scheduler; triggers the periodic `sweep_expired_jobs` cleanup task
@@ -107,7 +108,7 @@ Output files land in `/storage/outputs/{job_id}/`: `output.mp4`, `transcript.srt
 | `hooks/useJobPolling.ts` | Polls `GET /api/jobs/{job_id}` every 2s until a configurable terminal state (`ready` for transcribe phase, `complete` for render phase) |
 | `types/index.ts` | Shared TypeScript interfaces: `StyleInfo`, `JobStatus`, `UploadResponse`, `TranscriptSegment`, `RenderRequest`, `CaptionPlacement` |
 
-The Vite dev proxy forwards `/api/*` to `http://backend:8000`, so the frontend never needs to know the backend URL directly.
+The frontend calls the API with relative `/api/*` paths; the edge nginx proxies those to `backend:8000`, so the frontend never needs to know the backend URL directly.
 
 ## Environment
 
