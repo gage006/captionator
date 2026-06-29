@@ -1,3 +1,4 @@
+import os
 import uuid
 import aiofiles
 from fastapi import APIRouter, File, Form, UploadFile, Depends
@@ -19,11 +20,18 @@ async def upload_video(
 ):
     # Style and placement are chosen later in the preview editor; upload only
     # stores the video and kicks off transcription.
-    job_id = uuid.uuid4().hex[:8]
+    # Full 128-bit hex id: unguessable (the download/preview/transcript routes are
+    # unauthenticated, so a short id would be enumerable) and collision-free.
+    job_id = uuid.uuid4().hex
     dest_dir = settings.upload_path / job_id
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_filename = file.filename or "video.mp4"
+    # Never trust the client-supplied filename for path building: strip any
+    # directory components (handling both "/" and "\" separators) and reject the
+    # traversal names so the write can only ever land inside dest_dir.
+    safe_filename = os.path.basename((file.filename or "").replace("\\", "/"))
+    if safe_filename in ("", ".", ".."):
+        safe_filename = "video.mp4"
     dest = dest_dir / safe_filename
 
     async with aiofiles.open(dest, "wb") as out:

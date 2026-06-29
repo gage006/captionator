@@ -6,12 +6,20 @@ Start the stack:
 
 Run these tests:
     pytest backend/tests/ -v
+
+The flow is two-phase: POST /api/upload only transcribes (status -> "ready"), then
+POST /api/jobs/{id}/render burns the chosen style/placement (-> "complete").
 """
 import time
 from pathlib import Path
 
 import httpx
 import pytest
+
+try:  # works whether pytest imports this as a package module or a top-level one
+    from .conftest import upload_sample, wait_for_status, render_job
+except ImportError:  # pragma: no cover
+    from conftest import upload_sample, wait_for_status, render_job
 
 BASE_URL = "http://localhost"
 PIPELINE_TIMEOUT = 600
@@ -20,6 +28,9 @@ EXPECTED_STYLE_IDS = {
     "classic", "tiktok_bold", "karaoke", "clean_box",
     "neon", "minimal", "cinematic", "duo_tone", "mixed_weight",
 }
+
+# Every status the API can report across both phases.
+VALID_STATUSES = {"transcribing", "ready", "rendering", "complete", "failed", "expired"}
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +64,7 @@ class TestStyles:
     def test_each_style_has_required_fields(self):
         r = httpx.get(f"{BASE_URL}/api/styles")
         for style in r.json():
-            for field in ("id", "label", "description", "preview_color"):
+            for field in ("id", "label", "description", "preview_color", "base_font_size"):
                 assert field in style, f"Field '{field}' missing from style {style.get('id')}"
 
     def test_preview_color_is_hex(self):
@@ -65,33 +76,22 @@ class TestStyles:
 
 
 # ---------------------------------------------------------------------------
-# Upload validation
+# Upload (phase 1) — no style here; just stores the video and starts transcription
 # ---------------------------------------------------------------------------
 
-class TestUploadValidation:
-    def test_rejects_unknown_style(self, sample_video: Path):
-        with open(sample_video, "rb") as f:
-            r = httpx.post(
-                f"{BASE_URL}/api/upload",
-                files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "does_not_exist"},
-                timeout=30,
-            )
-        assert r.status_code == 400
-
+class TestUpload:
     def test_accepts_valid_upload(self, sample_video: Path):
         with open(sample_video, "rb") as f:
             r = httpx.post(
                 f"{BASE_URL}/api/upload",
                 files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "classic"},
                 timeout=30,
             )
         assert r.status_code == 202
         body = r.json()
         assert "job_id" in body
-        assert len(body["job_id"]) == 8
-        assert body["status"] == "queued"
+        assert len(body["job_id"]) == 32  # full uuid4 hex, not a truncated id
+        assert body["status"] == "transcribing"
         assert "message" in body
 
     def test_accepts_explicit_language(self, sample_video: Path):
@@ -99,20 +99,41 @@ class TestUploadValidation:
             r = httpx.post(
                 f"{BASE_URL}/api/upload",
                 files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "classic", "language": "en"},
+                data={"language": "en"},
                 timeout=30,
             )
         assert r.status_code == 202
 
-    def test_accepts_auto_language(self, sample_video: Path):
+    def test_path_traversal_filename_is_neutralized(self, sample_video: Path):
+        """A malicious filename must not escape the job directory — the upload
+        should still succeed and produce a normal, downloadable job."""
         with open(sample_video, "rb") as f:
             r = httpx.post(
                 f"{BASE_URL}/api/upload",
-                files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "minimal", "language": "auto"},
+                files={"file": ("../../../../etc/pwned.mp4", f, "video/mp4")},
                 timeout=30,
             )
         assert r.status_code == 202
+        assert len(r.json()["job_id"]) == 32
+
+
+# ---------------------------------------------------------------------------
+# Render (phase 2) — style is validated and chosen here
+# ---------------------------------------------------------------------------
+
+class TestRender:
+    def test_rejects_unknown_style(self, ready_job: str):
+        r = render_job(ready_job, style="does_not_exist")
+        assert r.status_code == 400
+
+    def test_accepts_valid_style(self, ready_job: str):
+        r = render_job(ready_job, style="classic")
+        assert r.status_code == 202
+        assert r.json()["status"] == "rendering"
+
+    def test_404_for_unknown_job(self):
+        r = render_job("doesnotexist", style="classic")
+        assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -125,19 +146,12 @@ class TestJobPolling:
         assert r.status_code == 404
 
     def test_job_status_has_required_fields(self, sample_video: Path):
-        with open(sample_video, "rb") as f:
-            r = httpx.post(
-                f"{BASE_URL}/api/upload",
-                files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "classic"},
-                timeout=30,
-            )
-        job_id = r.json()["job_id"]
+        job_id = upload_sample(sample_video)
         r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}")
         assert r.status_code == 200
         body = r.json()
         assert body["job_id"] == job_id
-        assert body["status"] in ("queued", "processing", "complete", "failed")
+        assert body["status"] in VALID_STATUSES
         assert isinstance(body["progress"], int)
         assert 0 <= body["progress"] <= 100
         assert "step" in body
@@ -161,15 +175,9 @@ class TestJobPolling:
 # ---------------------------------------------------------------------------
 
 class TestDownload:
-    def test_download_blocked_while_queued(self, sample_video: Path):
-        with open(sample_video, "rb") as f:
-            r = httpx.post(
-                f"{BASE_URL}/api/upload",
-                files={"file": ("test.mp4", f, "video/mp4")},
-                data={"style": "classic"},
-                timeout=30,
-            )
-        job_id = r.json()["job_id"]
+    def test_download_blocked_before_complete(self, sample_video: Path):
+        # A freshly uploaded job is only transcribing/ready, never "complete".
+        job_id = upload_sample(sample_video)
         r = httpx.get(f"{BASE_URL}/api/download/{job_id}/video")
         assert r.status_code == 400
 
@@ -230,27 +238,12 @@ class TestDownload:
 @pytest.mark.parametrize("style_id", ["duo_tone", "mixed_weight"])
 def test_compound_style_pipeline_completes(sample_video: Path, style_id: str):
     """Compound styles have unique ASS-generation codepaths — each deserves a full run."""
-    with open(sample_video, "rb") as f:
-        r = httpx.post(
-            f"{BASE_URL}/api/upload",
-            files={"file": ("test.mp4", f, "video/mp4")},
-            data={"style": style_id},
-            timeout=60,
-        )
-    assert r.status_code == 202, f"Upload failed for style '{style_id}': {r.text}"
-    job_id = r.json()["job_id"]
+    job_id = upload_sample(sample_video)
+    wait_for_status(job_id, "ready")
 
-    deadline = time.time() + PIPELINE_TIMEOUT
-    while time.time() < deadline:
-        r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}", timeout=10)
-        status = r.json()
-        if status["status"] == "complete":
-            assert status["progress"] == 100
-            r_ass = httpx.get(f"{BASE_URL}/api/download/{job_id}/ass", timeout=15)
-            assert r_ass.status_code == 200
-            return
-        if status["status"] == "failed":
-            pytest.fail(f"Style '{style_id}' pipeline failed: {status.get('error')}")
-        time.sleep(2)
+    r = render_job(job_id, style=style_id)
+    assert r.status_code == 202, f"Render failed for style '{style_id}': {r.text}"
 
-    pytest.fail(f"Style '{style_id}' job {job_id} timed out after {PIPELINE_TIMEOUT}s")
+    wait_for_status(job_id, "complete")
+    r_ass = httpx.get(f"{BASE_URL}/api/download/{job_id}/ass", timeout=15)
+    assert r_ass.status_code == 200

@@ -1,55 +1,102 @@
 name: captionator
 
+# Tunables shared by backend, worker, and beat (all run the same image). Values
+# come from the project .env (docker compose reads it automatically for ${VAR}
+# interpolation); the :-defaults apply when a var is unset, so the stack runs
+# with no .env file too. REDIS_URL/STORAGE_PATH are deployment-fixed (they match
+# the compose network and the volume mount) and are intentionally not tunable.
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  STORAGE_PATH: /storage
+  WHISPER_MODEL: ${WHISPER_MODEL:-small.en}
+  WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8_float32}
+  WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-0}
+  CLEANUP_DELAY_SECONDS: ${CLEANUP_DELAY_SECONDS:-600}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   backend:
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
     restart: unless-stopped
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_PATH=/storage
-      - WHISPER_MODEL=base.en
+    environment: *app-env
     volumes:
       - ./backend/storage:/storage
-      - whisper_cache:/root/.cache/huggingface
+      - whisper_cache:/home/app/.cache/huggingface
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
     command: celery -A app.tasks.celery_app worker --concurrency=1 --loglevel=info
     restart: unless-stopped
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_PATH=/storage
-      - WHISPER_MODEL=base.en
+    environment: *app-env
     volumes:
       - ./backend/storage:/storage
-      - whisper_cache:/root/.cache/huggingface
+      - whisper_cache:/home/app/.cache/huggingface
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    # Ping the worker over the broker: catches a worker that's alive but can't reach
+    # Redis (a crashed worker exits and is handled by restart, not by health). The
+    # prefork MainProcess answers control pings even while the pool is mid-transcode,
+    # so this stays green during long jobs. $$HOSTNAME -> the worker's node name.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME -t 10 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 12s
+      retries: 3
+      start_period: 40s
 
   beat:
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
-    command: celery -A app.tasks.celery_app beat --loglevel=info
+    # --schedule must point somewhere the non-root "app" user can write; the cwd
+    # (/app) is root-owned. The schedule shelf is just last-run bookkeeping, so a
+    # per-container path under /tmp is fine.
+    command: celery -A app.tasks.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     restart: unless-stopped
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_PATH=/storage
-      - WHISPER_MODEL=base.en
+    environment: *app-env
+    # Beat configures the same Celery app, which initializes the SQLite DB on
+    # startup; mount storage so that write lands on the shared DB, not a throwaway
+    # path inside the container.
+    volumes:
+      - ./backend/storage:/storage
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    # No healthcheck by design: beat runs as PID 1, so a crash exits the container
+    # and `restart` recovers it; it isn't a worker node, so `inspect ping` can't see
+    # it; and a wedged-but-alive beat only delays cleanup, which sweep_expired_jobs +
+    # the per-job countdown already backstop.
 
   frontend:
     image: ghcr.io/gage006/captionator-frontend:${IMAGE_TAG:-latest}
     build: ./frontend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   nginx:
     image: ghcr.io/gage006/captionator-nginx:${IMAGE_TAG:-latest}
@@ -57,8 +104,10 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

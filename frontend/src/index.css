@@ -33,13 +33,13 @@ progress::-webkit-progress-value {
   background: #a855f7;
   border-radius: 4px;
   transition: width 0.4s ease;
-  animation: progress-pulse 1.4s ease-in-out infinite;
+  animation: progress-pulse 2.6s ease-in-out infinite;
 }
 
 progress::-moz-progress-bar {
   background: #a855f7;
   border-radius: 4px;
-  animation: progress-pulse 1.4s ease-in-out infinite;
+  animation: progress-pulse 2.6s ease-in-out infinite;
 }
 
 /* Breathing purple glow so the bar reads as "alive" while work is in flight. */

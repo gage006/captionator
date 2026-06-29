@@ -136,9 +136,25 @@ def render_video(job_id: str) -> None:
         ass_path = output_dir / "captions.ass"
         ass_path.write_text(ass_content, encoding="utf-8")
 
-        _update_job(db, job_id, step="burning", progress=70)
+        _update_job(db, job_id, step="burning", progress=60)
+
+        # Map FFmpeg's 0..1 encode progress onto 60..99% and persist it as it
+        # climbs, so the (longest) burn step shows a live bar instead of stalling
+        # at a fixed value. Throttle to whole-percent increases to avoid a DB
+        # commit on every FFmpeg progress tick.
+        last_pct = 60
+
+        def on_burn_progress(fraction: float) -> None:
+            nonlocal last_pct
+            pct = 60 + int(fraction * 39)
+            if pct > last_pct:
+                last_pct = pct
+                _update_job(db, job_id, progress=pct)
+
         output_video = str(output_dir / "output.mp4")
-        burn_subtitles(video_path, str(ass_path), output_video)
+        burn_subtitles(
+            video_path, str(ass_path), output_video, progress_callback=on_burn_progress
+        )
 
         _update_job(
             db,

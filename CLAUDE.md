@@ -32,7 +32,21 @@ uvicorn app.main:app --reload --port 8000
 celery -A app.tasks.celery_app worker --loglevel=info  # In a separate terminal
 ```
 
-There are no test suites configured for either frontend or backend.
+### Tests (require the Docker stack running)
+
+Both suites drive the live stack over HTTP, so bring it up first (the dev override uses the fast `tiny.en` model):
+
+```bash
+bash scripts/run-e2e.sh   # one-shot: build fixture, start stack, run pytest + Playwright
+```
+
+Or run a suite directly against an already-running stack on `http://localhost`:
+```bash
+pytest backend/tests/ -v                       # API integration tests (httpx)
+cd e2e && npm install && npx playwright test   # browser E2E (Playwright)
+```
+
+Both skip automatically if the fixture `backend/tests/fixtures/sample.mp4` is missing (`bash scripts/create_test_fixture.sh` generates it). There are no unit tests; coverage is end-to-end against the running services.
 
 ## Architecture
 
@@ -46,16 +60,20 @@ Six Docker containers behind an Nginx reverse proxy (port 80):
 
 Persistent storage is mounted at `./backend/storage` → `/storage` inside containers. SQLite DB lives at `/storage/captionator.db`.
 
+The backend image (backend/worker/beat) runs its workload as the unprivileged `app` user: `backend/docker-entrypoint.sh` starts as root only to `chown` the mounted volumes, then drops privileges via `gosu`. A side effect of the non-root chown is that files under `./backend/storage` become owned by the container's `app` uid on the host — expected, and the app manages its own lifecycle (cleanup deletes them from inside the container).
+
+Healthchecks: `redis` (`redis-cli ping`), `frontend` (HTTP), `worker` (`celery inspect ping` over the broker — catches an alive-but-disconnected worker), and `backend`. The backend `GET /api/health` is a **readiness** probe, not a static literal: it checks the Redis broker, a DB `SELECT 1`, and storage writability, returning `200 {status: ok, checks: {...}}` or `503 {status: degraded, ...}` naming the failed dependency. Dependents wait for `condition: service_healthy`. `beat` has no healthcheck by design (it's PID 1, so a crash is handled by `restart`; a wedged-but-alive beat only delays cleanup, which other mechanisms backstop).
+
 ### Backend module map (`backend/app/`)
 
 | Path | Role |
 |------|------|
-| `main.py` | FastAPI app, CORS, router registration, lifespan handler |
-| `config.py` | Settings loaded from `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`) |
+| `main.py` | FastAPI app, router registration, lifespan handler; CORS is opt-in (only enabled when `CORS_ORIGINS` is set — no wildcard) |
+| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`) |
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
-| `routers/upload.py` | `POST /api/upload` — saves file, creates Job, enqueues `transcribe_video` (no style at upload) |
+| `routers/upload.py` | `POST /api/upload` — saves file (filename sanitized to its basename; job id is a full uuid4 hex), creates Job, enqueues `transcribe_video` (no style at upload) |
 | `routers/jobs.py` | `GET /api/jobs/{job_id}` (status); `GET /api/jobs/{job_id}/transcript` (segments for preview); `POST /api/jobs/{job_id}/render` (start render with style+placement) |
 | `routers/preview.py` | `GET /api/preview/{job_id}/source` — streams the uploaded source video inline (Range-enabled) for the preview scrubber |
 | `routers/download.py` | `GET /api/download/{job_id}/{file_type}` — streams output files |
@@ -87,8 +105,8 @@ POST /api/jobs/{job_id}/render  { style, position_x, position_y, scale }
 
 render_video task (phase 2):
   1. Load transcript.json   →  55%
-  2. Build ASS (style + placement + size)  →  70%
-  3. FFmpeg burn captions   →  100%  →  status=complete
+  2. Build ASS (style + placement + size)  →  60%
+  3. FFmpeg burn captions   →  60..99% (live, driven by FFmpeg -progress)  →  100%  →  status=complete
 ```
 
 Output files land in `/storage/outputs/{job_id}/`: `output.mp4`, `transcript.srt`, `transcript.txt`, `transcript.json`, `captions.ass`.
@@ -112,13 +130,17 @@ The frontend calls the API with relative `/api/*` paths; the edge nginx proxies 
 
 ## Environment
 
-Copy `.env.example` to `.env` before first run. Key variables:
+Configuration is optional: copy `.env.example` to `.env` to override defaults. `docker compose` reads `.env` automatically and substitutes the values into the container env (each var defaults via `${VAR:-default}` in `docker-compose.yml`, so the stack also runs with no `.env`). `REDIS_URL` and `STORAGE_PATH` are deployment-fixed in compose (they match the network and the volume mount) and are not meant to be overridden; the tunables are:
 ```
-REDIS_URL=redis://redis:6379/0
-STORAGE_PATH=/storage
-WHISPER_MODEL=base.en
+WHISPER_MODEL=small.en        # default; see below
+WHISPER_COMPUTE_TYPE=int8_float32
+WHISPER_CPU_THREADS=0         # 0 = auto-detect physical cores
+CLEANUP_DELAY_SECONDS=600
+CORS_ORIGINS=                 # comma-separated; empty = same-origin only (no CORS)
 ```
 
-`WHISPER_MODEL` can be changed to `small`, `medium`, `large`, etc. — larger models are more accurate but slower and require more RAM. The model is downloaded on first use and cached in a Docker volume (`whisper_cache`).
+`WHISPER_MODEL` defaults to **`small.en`**. It can be changed to `tiny.en`/`base.en`/`medium.en` (English) or `small`/`medium`/`large-v3` (multilingual) — larger models are more accurate but slower and require more RAM. The model is downloaded on first use and cached in a Docker volume (`whisper_cache`).
 
-Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count. Because faster-whisper is so much quicker, bumping `WHISPER_MODEL` to `small.en` lands near the old `base.en` wall-clock at higher accuracy.
+Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality. Because faster-whisper is so much quicker, the default `small.en` lands near the old `base.en` wall-clock at higher accuracy. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count.
+
+When run standalone (outside Docker), the backend reads these same variables from a `backend/.env` or the process environment via pydantic-settings.

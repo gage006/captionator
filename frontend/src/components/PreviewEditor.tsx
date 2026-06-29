@@ -179,12 +179,21 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
           src={sourceVideoUrl(jobId)}
           controls
           playsInline
-          onLoadedMetadata={(e) =>
-            setVideoDims({
-              w: e.currentTarget.videoWidth,
-              h: e.currentTarget.videoHeight,
-            })
-          }
+          preload="auto"
+          onLoadedMetadata={(e) => {
+            const video = e.currentTarget
+            setVideoDims({ w: video.videoWidth, h: video.videoHeight })
+            // The first frame is often black (intros/fades), making caption
+            // alignment guesswork. Seek to a representative frame — the middle of
+            // the first caption, i.e. where real content is on screen — so the
+            // user aligns against what they'll actually see. Falls back to 1s.
+            const sample =
+              segments.length > 0
+                ? (segments[0].start + segments[0].end) / 2
+                : 1
+            const target = Math.min(sample, (video.duration || sample) - 0.05)
+            if (Number.isFinite(target) && target > 0) video.currentTime = target
+          }}
           onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
         />
         <div className="caption-overlay">
