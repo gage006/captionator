@@ -1,0 +1,13 @@
+# The nginx image builds from the repo root (it compiles ./frontend), so keep
+# heavy and irrelevant paths out of the build context sent to the daemon.
+.git
+.github
+.claude
+**/node_modules
+**/dist
+backend/storage
+e2e
+scripts
+*.md
+.env
+.env.*

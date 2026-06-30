@@ -24,10 +24,11 @@ jobs:
         include:
           - service: backend
             context: ./backend
-          - service: frontend
-            context: ./frontend
+          # nginx builds the frontend assets and bakes them in, so its context
+          # is the repo root and it needs an explicit Dockerfile path.
           - service: nginx
-            context: ./nginx
+            context: .
+            dockerfile: ./nginx/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -59,6 +60,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           # On pull requests, build only (verify it compiles) — never publish.
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

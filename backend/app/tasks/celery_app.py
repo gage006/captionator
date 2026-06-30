@@ -1,4 +1,5 @@
 import os
+import tempfile
 from celery import Celery
 
 celery = Celery(
@@ -8,12 +9,22 @@ celery = Celery(
     include=["app.tasks.pipeline"],
 )
 
+# Beat persists its schedule to a shelve/gdbm file. Defaulting to the bare
+# "celerybeat-schedule" writes it to the cwd (/app in the image), which is
+# root-owned — beat runs as the unprivileged "app" user, so creating/recreating
+# the file there fails with "[Errno 13] Permission denied". Pin it to the OS temp
+# dir (world-writable /tmp in the container, the OS tmp dir when run standalone)
+# so any invocation is writable regardless of the launch command. The shelf is
+# just last-run bookkeeping, so an ephemeral per-container path is fine.
+beat_schedule_filename = os.path.join(tempfile.gettempdir(), "celerybeat-schedule")
+
 celery.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
     worker_prefetch_multiplier=1,
+    beat_schedule_filename=beat_schedule_filename,
 )
 
 # Durable cleanup: re-derive expired jobs from the DB every minute so pending

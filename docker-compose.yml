@@ -70,7 +70,8 @@ services:
     build: ./backend
     # --schedule must point somewhere the non-root "app" user can write; the cwd
     # (/app) is root-owned. The schedule shelf is just last-run bookkeeping, so a
-    # per-container path under /tmp is fine.
+    # per-container path under /tmp is fine. This matches the in-code default
+    # (celery_app.beat_schedule_filename), which backstops a bare `celery beat`.
     command: celery -A app.tasks.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     restart: unless-stopped
     environment: *app-env
@@ -87,28 +88,27 @@ services:
     # it; and a wedged-but-alive beat only delays cleanup, which sweep_expired_jobs +
     # the per-job countdown already backstop.
 
-  frontend:
-    image: ghcr.io/gage006/captionator-frontend:${IMAGE_TAG:-latest}
-    build: ./frontend
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   nginx:
     image: ghcr.io/gage006/captionator-nginx:${IMAGE_TAG:-latest}
-    build: ./nginx
+    # Build context is the repo root so the image can compile the frontend
+    # assets (./frontend) and bake them in alongside the edge proxy config.
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     ports:
       - "80:80"
     depends_on:
       backend:
         condition: service_healthy
-      frontend:
-        condition: service_healthy
     restart: unless-stopped
+    # nginx is now the static layer too (assets baked in), so it owns the probe
+    # the frontend service used to. GET / serves the local index.html.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   whisper_cache:

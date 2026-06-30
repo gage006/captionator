@@ -7,13 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Docker (primary dev workflow)
 ```bash
 docker compose pull        # Fetch prebuilt images from GHCR (ghcr.io/gage006/captionator-*)
-docker compose up          # Start all 6 services (redis, backend, worker, beat, frontend, nginx)
+docker compose up          # Start all 5 services (redis, backend, worker, beat, nginx)
 docker compose up --build  # Build images locally instead of using the prebuilt ones
 docker compose logs -f worker   # Stream Celery worker logs
 docker compose logs -f backend  # Stream FastAPI logs
 ```
 
-The `backend`, `frontend`, and `nginx` services declare both an `image:` (GHCR) and a `build:` context. `docker compose pull` + `up` uses the prebuilt images; `up --build` rebuilds from the Dockerfiles. Images are published by `.github/workflows/docker-publish.yml` on push to `main` and `v*` tags. Override the published tag at run time with `IMAGE_TAG` (default `latest`).
+The `backend` and `nginx` services declare both an `image:` (GHCR) and a `build:` context. `docker compose pull` + `up` uses the prebuilt images; `up --build` rebuilds from the Dockerfiles. The `nginx` image is multi-stage: it compiles the frontend (`./frontend`) and bakes the static build in alongside the edge proxy config, so its build context is the repo root. Images are published by `.github/workflows/docker-publish.yml` on push to `main` and `v*` tags. Override the published tag at run time with `IMAGE_TAG` (default `latest`).
 
 ### Frontend (standalone)
 ```bash
@@ -22,7 +22,7 @@ npm install
 npm run build    # TypeScript check + production build → dist/
 ```
 
-There is no dev server. The frontend ships as a static build served by nginx (see `frontend/Dockerfile`), so the running app is always the exact production artifact. Iterate by rebuilding the image (`docker compose up --build`).
+There is no dev server. The frontend ships as a static build served by the `nginx` image, which compiles it in a build stage and bakes the artifact in (see `nginx/Dockerfile`), so the running app is always the exact production artifact. Iterate by rebuilding the image (`docker compose up --build`).
 
 ### Backend (standalone, requires Redis running)
 ```bash
@@ -50,9 +50,8 @@ Both skip automatically if the fixture `backend/tests/fixtures/sample.mp4` is mi
 
 ## Architecture
 
-Six Docker containers behind an Nginx reverse proxy (port 80):
-- **nginx** — routes `/api/*` → `backend:8000`, all other paths → `frontend:3000`; 2 GB upload limit, 600s timeouts
-- **frontend** — React + TypeScript static build (Vite), served by nginx
+Five Docker containers, with Nginx as the edge (port 80):
+- **nginx** — serves the React + TypeScript static build (Vite) directly and proxies `/api/*` → `backend:8000`; the frontend assets are baked into this image at build time; 2 GB upload limit, 600s timeouts
 - **backend** — FastAPI, exposes REST API, writes jobs to SQLite, enqueues Celery tasks
 - **worker** — Celery consumer, runs the video processing pipeline
 - **beat** — Celery Beat scheduler; triggers the periodic `sweep_expired_jobs` cleanup task
@@ -62,7 +61,7 @@ Persistent storage is mounted at `./backend/storage` → `/storage` inside conta
 
 The backend image (backend/worker/beat) runs its workload as the unprivileged `app` user: `backend/docker-entrypoint.sh` starts as root only to `chown` the mounted volumes, then drops privileges via `gosu`. A side effect of the non-root chown is that files under `./backend/storage` become owned by the container's `app` uid on the host — expected, and the app manages its own lifecycle (cleanup deletes them from inside the container).
 
-Healthchecks: `redis` (`redis-cli ping`), `frontend` (HTTP), `worker` (`celery inspect ping` over the broker — catches an alive-but-disconnected worker), and `backend`. The backend `GET /api/health` is a **readiness** probe, not a static literal: it checks the Redis broker, a DB `SELECT 1`, and storage writability, returning `200 {status: ok, checks: {...}}` or `503 {status: degraded, ...}` naming the failed dependency. Dependents wait for `condition: service_healthy`. `beat` has no healthcheck by design (it's PID 1, so a crash is handled by `restart`; a wedged-but-alive beat only delays cleanup, which other mechanisms backstop).
+Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the static layer too), `worker` (`celery inspect ping` over the broker — catches an alive-but-disconnected worker), and `backend`. The backend `GET /api/health` is a **readiness** probe, not a static literal: it checks the Redis broker, a DB `SELECT 1`, and storage writability, returning `200 {status: ok, checks: {...}}` or `503 {status: degraded, ...}` naming the failed dependency. Dependents wait for `condition: service_healthy`. `beat` has no healthcheck by design (it's PID 1, so a crash is handled by `restart`; a wedged-but-alive beat only delays cleanup, which other mechanisms backstop).
 
 ### Backend module map (`backend/app/`)
 
