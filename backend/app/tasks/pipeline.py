@@ -47,6 +47,15 @@ def _serializable_segments(segments: list) -> list:
     return out
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write via a temp file + rename so a concurrent reader (e.g. render_video
+    running in a different worker process) never observes a partially-written
+    file — os.replace()/Path.replace() is an atomic rename on POSIX."""
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def write_transcript_files(output_dir: Path, segments: list) -> None:
     """Persist transcript artifacts: SRT + TXT for download, JSON for preview/
     render. Shared by the initial transcription (transcribe_video) and the
@@ -60,14 +69,11 @@ def write_transcript_files(output_dir: Path, segments: list) -> None:
             seg["text"],
             "",
         ])
-    (output_dir / "transcript.srt").write_text("\n".join(srt_lines), encoding="utf-8")
-    (output_dir / "transcript.txt").write_text(
-        " ".join(seg["text"] for seg in segments),
-        encoding="utf-8",
+    _atomic_write_text(output_dir / "transcript.srt", "\n".join(srt_lines))
+    _atomic_write_text(
+        output_dir / "transcript.txt", " ".join(seg["text"] for seg in segments)
     )
-    (output_dir / "transcript.json").write_text(
-        json.dumps({"segments": segments}), encoding="utf-8"
-    )
+    _atomic_write_text(output_dir / "transcript.json", json.dumps({"segments": segments}))
 
 
 @celery.task(name="transcribe_video")
@@ -102,6 +108,7 @@ def transcribe_video(job_id: str) -> None:
 
         result = transcribe(video_path, job.language, progress_callback=on_progress)
         segments = _serializable_segments(result["segments"])
+        write_transcript_files(output_dir, segments)
 
         silence_removed_seconds = None
         if job.remove_silences:
@@ -119,7 +126,9 @@ def transcribe_video(job_id: str) -> None:
             if not kept_ranges:
                 # Entire video flagged silent — refuse to produce a zero-duration
                 # output. remove_silences was explicitly requested, so silently
-                # ignoring it would be more surprising than failing loudly.
+                # ignoring it would be more surprising than failing loudly. The
+                # pre-trim transcript written above is still on disk and
+                # fetchable even though the job itself is marked failed.
                 raise RuntimeError(
                     "Silence removal would remove the entire video; aborting."
                 )
@@ -138,8 +147,9 @@ def transcribe_video(job_id: str) -> None:
                 silence_removed_seconds = max(0.0, duration - kept_total)
                 segments = remap_segments(segments, kept_ranges)
                 video_path = trimmed_path
-
-        write_transcript_files(output_dir, segments)
+                # Overwrite with the final, trimmed-timeline transcript now
+                # that the trim actually succeeded.
+                write_transcript_files(output_dir, segments)
 
         _update_job(
             db,

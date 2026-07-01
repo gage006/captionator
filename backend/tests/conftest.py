@@ -117,6 +117,28 @@ def sample_video() -> Path:
     return FIXTURE
 
 
+@pytest.fixture(scope="session")
+def fully_silent_video(tmp_path_factory) -> Path:
+    """A short, entirely-silent clip — silencedetect should flag the whole
+    duration, which the pipeline must treat as a hard failure rather than
+    producing a zero-length output. Generated on the fly (not committed as a
+    binary) since it's trivial and deterministic to produce."""
+    out = tmp_path_factory.mktemp("fixtures") / "silent.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-f", "lavfi", "-i", "color=c=black:size=320x240:rate=24",
+            "-t", "2",
+            "-c:v", "libx264", "-c:a", "aac",
+            str(out),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return out
+
+
 @pytest.fixture
 def ready_job(sample_video: Path) -> str:
     """A freshly uploaded + transcribed job (status 'ready'), not yet rendered.

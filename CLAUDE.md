@@ -95,11 +95,13 @@ POST /api/upload
   → enqueues transcribe_video Celery task
 
 transcribe_video task (phase 1):
-  1. Transcribe (Whisper)
+  1. Transcribe (Whisper), write transcript.srt + .txt + transcript.json  →  5..95%
   2. If remove_silences: detect + cut silent ranges, remap transcript timings onto
-     the trimmed video, and swap job.filename to point at it  →  90..99%
-     (failure here fails the whole job; the original is never silently kept)
-  3. Write transcript.srt + .txt + transcript.json  →  status=ready
+     the trimmed video, swap job.filename to point at it, and re-write the
+     transcript files with the remapped timings  →  95..99%  →  status=ready
+     (failure here fails the whole job and leaves the pre-trim transcript already
+     persisted from step 1; the original video is never silently kept as a
+     fallback — the job is reported failed, not quietly downgraded)
 
 (user previews + picks style/placement in the editor)
 

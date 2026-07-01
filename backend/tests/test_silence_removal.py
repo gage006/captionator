@@ -87,3 +87,15 @@ class TestSilenceRemoval:
         body = r.json()
         assert "remove_silences" in body
         assert "silence_removed_seconds" in body
+
+    def test_transcript_persists_even_if_silence_removal_fails(
+        self, fully_silent_video: Path
+    ):
+        job_id = upload_sample_with_silence_removal(fully_silent_video)
+        status = wait_for_status(job_id, "failed")
+        assert "entire video" in (status.get("error") or "").lower()
+
+        # Whisper's transcription succeeded before the silence-removal step
+        # failed — that work must not be thrown away.
+        r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+        assert r.status_code == 200
