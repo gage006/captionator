@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,7 +45,10 @@ class Settings(BaseSettings):
     # build and risks hitting ffmpeg's internal graph limits. Beyond this cap the
     # shortest silences are progressively re-merged into their neighboring kept
     # segments, trading some silence-removal completeness for a bounded graph.
-    silence_max_segments: int = 60
+    # Must be >= 1: compute_kept_ranges' safety-merge loop assumes there's
+    # always at least one gap left to re-merge across while shrinking toward
+    # this cap, and indexes into an empty range otherwise.
+    silence_max_segments: int = Field(default=60, ge=1)
 
     @property
     def upload_path(self) -> Path:
