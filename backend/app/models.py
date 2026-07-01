@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Text, DateTime
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, Boolean
 from sqlalchemy.sql import func
 from .database import Base
 
@@ -19,6 +19,11 @@ class Job(Base):
     position_x = Column(Float, default=0.5)
     position_y = Column(Float, default=0.85)
     scale = Column(Float, default=1.0)
+    # Chosen at upload time. silence_removed_seconds stays None until the
+    # silence-removal step has actually run (distinguishes "not requested" from
+    # "computed as 0.0", i.e. no silence found).
+    remove_silences = Column(Boolean, default=False)
+    silence_removed_seconds = Column(Float, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime, nullable=True)

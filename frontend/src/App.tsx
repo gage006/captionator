@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { fetchStyles, uploadVideo, getTranscript, renderJob } from './api/client'
+import { fetchStyles, uploadVideo, getTranscript, getJobStatus, renderJob } from './api/client'
 import { useJobPolling } from './hooks/useJobPolling'
 import { UploadZone } from './components/UploadZone'
 import { PreviewEditor } from './components/PreviewEditor'
@@ -29,6 +29,7 @@ export default function App() {
   const [jobId, setJobId] = useState<string | null>(null)
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [errorMessage, setErrorMessage] = useState('')
+  const [silenceRemovedSeconds, setSilenceRemovedSeconds] = useState<number | null>(null)
   const loadingTranscriptRef = useRef(false)
 
   // The flow polls in two phases: while transcribing (stop at `ready`) and while
@@ -68,6 +69,9 @@ export default function App() {
       }
     } else if (appState === 'rendering') {
       if (jobStatus.status === 'complete') {
+        // Capture before the polling hook resets its status to null once
+        // `waiting` flips false on the next render.
+        setSilenceRemovedSeconds(jobStatus.silence_removed_seconds)
         setAppState('complete')
       } else if (jobStatus.status === 'failed' || jobStatus.status === 'expired') {
         setErrorMessage(jobStatus.error ?? 'Rendering failed.')
@@ -76,13 +80,16 @@ export default function App() {
     }
   }, [jobStatus, appState, jobId])
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (file: File, removeSilences: boolean) => {
     setAppState('uploading')
     setUploadProgress(0)
     try {
-      const res = await uploadVideo(file, 'auto', setUploadProgress)
+      const res = await uploadVideo(file, 'auto', removeSilences, setUploadProgress)
       setJobId(res.job_id)
       setAppState('transcribing')
+      // A new job is a new "page" worth returning to — push so Back leaves it
+      // on the history stack, distinct from whatever was there before.
+      window.history.pushState({}, '', `?job=${res.job_id}`)
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Upload failed.')
       setAppState('error')
@@ -100,14 +107,82 @@ export default function App() {
     }
   }
 
-  const reset = () => {
+  // Pure state reset, no history side effect — this is what a popstate-driven
+  // "back to idle" uses, since the URL has already changed by the time we hear
+  // about it and pushing/replacing again would corrupt the back/forward stack.
+  const resetState = () => {
     setAppState('idle')
     setJobId(null)
     setUploadProgress(0)
     setSegments([])
     setErrorMessage('')
+    setSilenceRemovedSeconds(null)
     loadingTranscriptRef.current = false
   }
+
+  // User-initiated reset ("Process another video" / "Try again"): also pushes
+  // a fresh idle entry, so pressing Back from idle returns to this job's URL
+  // and rehydrate() restores it.
+  const reset = () => {
+    resetState()
+    window.history.pushState({}, '', window.location.pathname)
+  }
+
+  // Re-derive UI state from the job's current server-side status. Used both on
+  // first mount (the URL already has a ?job=... from a previous visit) and on
+  // browser back/forward — the URL, not React state, is the source of truth
+  // for "which job am I looking at," so this is the one place that turns a
+  // job id back into the right screen.
+  const rehydrate = async (id: string) => {
+    setJobId(id)
+    try {
+      const status = await getJobStatus(id)
+      if (status.status === 'transcribing') {
+        setAppState('transcribing')
+      } else if (status.status === 'ready') {
+        const t = await getTranscript(id)
+        setSegments(t.segments)
+        setAppState('editing')
+      } else if (status.status === 'rendering') {
+        setAppState('rendering')
+      } else if (status.status === 'complete') {
+        setSilenceRemovedSeconds(status.silence_removed_seconds)
+        setAppState('complete')
+      } else {
+        // failed / expired
+        setErrorMessage(status.error ?? 'This job is no longer available.')
+        setAppState('error')
+      }
+    } catch {
+      // Most likely a 404 — the job was cleaned up after the retention window.
+      // Surface it rather than silently bouncing to idle, but drop the dead
+      // job id from the URL so a refresh doesn't repeat the failed lookup.
+      setErrorMessage('This video session could not be found — it may have expired.')
+      setAppState('error')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }
+
+  // On mount, pick up a job id already in the URL (deep link / refresh).
+  // On back/forward, re-sync from whatever job id the URL now has — or back
+  // to idle if there isn't one. Intentionally empty deps: rehydrate/resetState
+  // only call stable setters, so the closure captured at mount never goes stale.
+  useEffect(() => {
+    const initialId = new URLSearchParams(window.location.search).get('job')
+    if (initialId) rehydrate(initialId)
+
+    const onPopState = () => {
+      const id = new URLSearchParams(window.location.search).get('job')
+      if (id) {
+        rehydrate(id)
+      } else {
+        resetState()
+      }
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="app">
@@ -143,6 +218,7 @@ export default function App() {
           jobId={jobId}
           styles={styles}
           segments={segments}
+          onSegmentsChange={setSegments}
           onSave={handleSave}
         />
       )}
@@ -159,7 +235,7 @@ export default function App() {
 
       {appState === 'complete' && jobId && (
         <>
-          <DownloadPanel jobId={jobId} />
+          <DownloadPanel jobId={jobId} silenceRemovedSeconds={silenceRemovedSeconds} />
           <button className="btn-ghost" onClick={reset}>
             Process another video
           </button>

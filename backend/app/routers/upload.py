@@ -16,6 +16,7 @@ router = APIRouter()
 async def upload_video(
     file: UploadFile = File(...),
     language: str = Form("auto"),
+    remove_silences: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     # Style and placement are chosen later in the preview editor; upload only
@@ -45,6 +46,7 @@ async def upload_video(
         id=job_id,
         filename=str(dest),
         language=language,
+        remove_silences=remove_silences,
         status="transcribing",
         step="transcribing",
         progress=0,

@@ -8,6 +8,7 @@ export const PREVIEW_BG: Record<string, string> = {
   clean_box: '#1a1a1a',
   duo_tone: '#111',
   mixed_weight: '#111',
+  keyword_pop: '#111',
 }
 
 export const BOLD_STYLES = [
@@ -16,8 +17,9 @@ export const BOLD_STYLES = [
   'clean_box',
   'duo_tone',
   'mixed_weight',
+  'keyword_pop',
 ]
-export const LARGE_STYLES = ['tiktok_bold', 'duo_tone', 'mixed_weight']
+export const LARGE_STYLES = ['tiktok_bold', 'duo_tone', 'mixed_weight', 'keyword_pop']
 
 /**
  * CSS approximation of a caption style's *text* appearance (color, weight, italic,

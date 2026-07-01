@@ -1,13 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { StyleInfo, TranscriptSegment, RenderRequest } from '../types'
 import { sourceVideoUrl } from '../api/client'
 import { StylePicker } from './StylePicker'
+import { TranscriptEditor } from './TranscriptEditor'
+import { CollapsibleSection } from './CollapsibleSection'
 import { captionTextStyle, captionBackdrop } from './captionStyle'
 
 interface Props {
   jobId: string
   styles: StyleInfo[]
   segments: TranscriptSegment[]
+  onSegmentsChange: (segments: TranscriptSegment[]) => void
   onSave: (req: RenderRequest) => void
 }
 
@@ -28,12 +31,21 @@ type DragState = {
   centerY: number
 }
 
-export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
+export function PreviewEditor({
+  jobId,
+  styles,
+  segments,
+  onSegmentsChange,
+  onSave,
+}: Props) {
   const [selectedStyle, setSelectedStyle] = useState(styles[0]?.id ?? '')
   const [position, setPosition] = useState(DEFAULT_POS)
   const [scale, setScale] = useState(1.0)
   const [time, setTime] = useState(0)
   const [dragging, setDragging] = useState(false)
+  const [seekedToSample, setSeekedToSample] = useState(false)
+  const [styleOpen, setStyleOpen] = useState(true)
+  const [transcriptOpen, setTranscriptOpen] = useState(true)
 
   // Intrinsic video size and the on-screen size of the video box, used to size the
   // overlay text in proportion to the eventual burned output.
@@ -41,7 +53,6 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
   const [stageSize, setStageSize] = useState<{ w: number; h: number } | null>(null)
 
   const stageRef = useRef<HTMLDivElement>(null)
-  const blockRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
 
   const selectedInfo = styles.find((s) => s.id === selectedStyle)
@@ -50,6 +61,11 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
   useEffect(() => {
     if (!selectedStyle && styles.length > 0) setSelectedStyle(styles[0].id)
   }, [styles, selectedStyle])
+
+  // A new job means a new <video> source — re-arm the "hide until seeked" gate.
+  useEffect(() => {
+    setSeekedToSample(false)
+  }, [jobId])
 
   // Track the rendered size of the video box.
   useEffect(() => {
@@ -75,13 +91,8 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
         const dx = (e.clientX - drag.startX) / rect.width
         const dy = (e.clientY - drag.startY) / rect.height
         let nx = clamp(drag.startPos.x + dx, 0.02, 0.98)
+        const ny = clamp(drag.startPos.y + dy, 0.04, 0.98)
         if (Math.abs(nx - 0.5) < SNAP_THRESHOLD) nx = 0.5 // snap to horizontal center
-        // Vertical has no wrap-to-fit, so keep the block fully on screen by
-        // clamping its center against its own measured half-height.
-        const halfH = blockRef.current
-          ? blockRef.current.offsetHeight / 2 / rect.height
-          : 0
-        const ny = clamp(drag.startPos.y + dy, Math.min(halfH, 0.5), Math.max(1 - halfH, 0.5))
         setPosition({ x: nx, y: ny })
       } else {
         const dist = Math.hypot(e.clientX - drag.centerX, e.clientY - drag.centerY)
@@ -149,33 +160,12 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
 
   const atCenter = position.x === 0.5
 
-  // Mirror the right-edge shrink-to-fit onto the left edge: cap the block width to
-  // twice the distance to the nearer side so it squishes (rather than clipping)
-  // against whichever horizontal edge it approaches.
-  const maxWidthFrac = Math.min(0.86, 2 * Math.min(position.x, 1 - position.x))
-
-  // Keep the (already width-capped) block from overflowing the top/bottom as it
-  // grows: if the rendered height exceeds the room available around its center,
-  // shrink the scale to fit. Runs on size/position/style changes — deliberately
-  // not on caption text changes, so playback can't quietly shrink the chosen size.
-  useLayoutEffect(() => {
-    const stage = stageRef.current
-    const block = blockRef.current
-    if (!stage || !block) return
-    const stageH = stage.getBoundingClientRect().height
-    if (stageH === 0) return
-    const availH = 2 * Math.min(position.y, 1 - position.y) * stageH
-    const h = block.offsetHeight
-    if (h > availH + 0.5) {
-      setScale((s) => Math.max(0.3, (s * availH) / h))
-    }
-  }, [fontPx, position.x, position.y, stageSize, selectedStyle])
-
   return (
     <div className="preview-editor">
       <div className="preview-stage" ref={stageRef}>
         <video
           className="preview-video"
+          style={{ opacity: seekedToSample ? 1 : 0 }}
           src={sourceVideoUrl(jobId)}
           controls
           playsInline
@@ -192,21 +182,28 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
                 ? (segments[0].start + segments[0].end) / 2
                 : 1
             const target = Math.min(sample, (video.duration || sample) - 0.05)
-            if (Number.isFinite(target) && target > 0) video.currentTime = target
+            if (Number.isFinite(target) && target > 0) {
+              // Stay hidden until `seeked` fires — setting currentTime only
+              // starts an async seek, and the element keeps painting frame 0
+              // (often black) until the new frame actually decodes.
+              video.currentTime = target
+            } else {
+              // No seek will happen, so there's nothing to wait for.
+              setSeekedToSample(true)
+            }
           }}
+          onSeeked={() => setSeekedToSample(true)}
           onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
         />
         <div className="caption-overlay">
           {dragging && atCenter && <div className="center-guide" />}
           {selectedInfo && fontPx > 0 && (
             <div
-              ref={blockRef}
               className={`caption-block${dragging ? ' dragging' : ''}`}
               style={{
                 left: `${position.x * 100}%`,
                 top: `${position.y * 100}%`,
                 fontSize: `${fontPx}px`,
-                maxWidth: `${maxWidthFrac * 100}%`,
               }}
               onPointerDown={startMove}
               role="button"
@@ -243,11 +240,29 @@ export function PreviewEditor({ jobId, styles, segments, onSave }: Props) {
         <span className="size-val">{Math.round(scale * 100)}%</span>
       </div>
 
-      <StylePicker
-        styles={styles}
-        selected={selectedStyle}
-        onSelect={setSelectedStyle}
-      />
+      <CollapsibleSection
+        title="Caption Style"
+        open={styleOpen}
+        onToggle={() => setStyleOpen((v) => !v)}
+      >
+        <StylePicker
+          styles={styles}
+          selected={selectedStyle}
+          onSelect={setSelectedStyle}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Transcript"
+        open={transcriptOpen}
+        onToggle={() => setTranscriptOpen((v) => !v)}
+      >
+        <TranscriptEditor
+          jobId={jobId}
+          segments={segments}
+          onSegmentsChange={onSegmentsChange}
+        />
+      </CollapsibleSection>
 
       <button
         className="btn-primary"

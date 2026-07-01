@@ -34,7 +34,7 @@ celery -A app.tasks.celery_app worker --loglevel=info  # In a separate terminal
 
 ### Tests (require the Docker stack running)
 
-Both suites drive the live stack over HTTP, so bring it up first (the dev override uses the fast `tiny.en` model):
+Both suites drive the live stack over HTTP, so bring it up first (the dev override pins `WHISPER_MODEL=base.en` explicitly — same as the production default, but decoupled so the test suite's accuracy assertions don't silently break if the default ever changes):
 
 ```bash
 bash scripts/run-e2e.sh   # one-shot: build fixture, start stack, run pytest + Playwright
@@ -80,9 +80,11 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `tasks/celery_app.py` | Celery app init, broker=Redis, initializes DB on startup |
 | `tasks/pipeline.py` | `transcribe_video` (phase 1) + `render_video` (phase 2); `cleanup_job` deletes a job's files; `sweep_expired_jobs` is the Beat-driven durable cleanup backstop (also reaps abandoned pre-render uploads) |
 | `tasks/transcribe.py` | faster-whisper (CTranslate2) transcription (globally cached model), int8 CPU-quantized with VAD; returns segments with word-level timing. Progress driven off each segment's end time vs. audio duration |
-| `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing |
+| `tasks/silence.py` | Optional, opt-in (`Job.remove_silences`) step run inside phase 1: `detect_silences` (FFmpeg `silencedetect`), `compute_kept_ranges` (pure; pads/merges/caps), `trim_silences` (FFmpeg `trim`/`atrim`+`concat` re-encode — cuts aren't keyframe-aligned, so `-c:v copy` isn't possible), `remap_segments` (pure; re-times every segment/word onto the trimmed timeline) |
+| `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing; `keyword_emphasis` styles pop one semantic word per fixed-size group instead of a trailing block |
+| `tasks/emphasis.py` | `pick_emphasis_word` — NLTK POS-tags a word group and returns the index of the longest noun/verb/adjective (or `None`), used by the Keyword Pop style |
 | `tasks/ffmpeg_burn.py` | Probes video dimensions + audio codec, burns ASS captions into video via FFmpeg (re-encodes video; stream-copies audio when already AAC) |
-| `styles/definitions.py` | 9 style templates (Classic, TikTok Bold, Karaoke, Clean Box, Neon, Minimal, Cinematic, + compound Duo Tone & Mixed Weight); `base_font_size()` helper |
+| `styles/definitions.py` | 10 style templates (Classic, TikTok Bold, Karaoke, Clean Box, Neon, Minimal, Cinematic, + compound Duo Tone, Mixed Weight & Keyword Pop); `base_font_size()` helper |
 
 ### Processing pipeline (two phases)
 
@@ -94,7 +96,10 @@ POST /api/upload
 
 transcribe_video task (phase 1):
   1. Transcribe (Whisper)
-  2. Write transcript.srt + .txt + transcript.json  →  status=ready
+  2. If remove_silences: detect + cut silent ranges, remap transcript timings onto
+     the trimmed video, and swap job.filename to point at it  →  90..99%
+     (failure here fails the whole job; the original is never silently kept)
+  3. Write transcript.srt + .txt + transcript.json  →  status=ready
 
 (user previews + picks style/placement in the editor)
 
@@ -131,15 +136,21 @@ The frontend calls the API with relative `/api/*` paths; the edge nginx proxies 
 
 Configuration is optional: copy `.env.example` to `.env` to override defaults. `docker compose` reads `.env` automatically and substitutes the values into the container env (each var defaults via `${VAR:-default}` in `docker-compose.yml`, so the stack also runs with no `.env`). `REDIS_URL` and `STORAGE_PATH` are deployment-fixed in compose (they match the network and the volume mount) and are not meant to be overridden; the tunables are:
 ```
-WHISPER_MODEL=small.en        # default; see below
+WHISPER_MODEL=base.en         # default; see below
 WHISPER_COMPUTE_TYPE=int8_float32
 WHISPER_CPU_THREADS=0         # 0 = auto-detect physical cores
 CLEANUP_DELAY_SECONDS=600
 CORS_ORIGINS=                 # comma-separated; empty = same-origin only (no CORS)
+SILENCE_THRESHOLD_DB=-30.0    # dBFS below which audio counts as silence
+SILENCE_MIN_DURATION=0.5      # seconds of quiet required to count as removable
+SILENCE_PADDING=0.15          # seconds kept around each cut, avoids clipping words
+SILENCE_MAX_SEGMENTS=60       # safety cap on kept-segment count
 ```
 
-`WHISPER_MODEL` defaults to **`small.en`**. It can be changed to `tiny.en`/`base.en`/`medium.en` (English) or `small`/`medium`/`large-v3` (multilingual) — larger models are more accurate but slower and require more RAM. The model is downloaded on first use and cached in a Docker volume (`whisper_cache`).
+`WHISPER_MODEL` defaults to **`base.en`** — the recommended starting point. `tiny.en` is faster but noticeably mis-hears words on real speech (verified against a known transcript in `backend/tests/test_real_speech_silence_removal.py`: it turned "the luckiest man" into "the luck group man" and "a bad break" into "a bad breath"); `base.en` gets both right. It can be changed to `tiny.en`/`small.en`/`medium.en` (English) or `tiny`/`small`/`medium`/`large-v3` (multilingual) — larger models are more accurate but slower and require more RAM. The model is downloaded on first use and cached in a Docker volume (`whisper_cache`).
 
-Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality. Because faster-whisper is so much quicker, the default `small.en` lands near the old `base.en` wall-clock at higher accuracy. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count.
+Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality, which is what makes `base.en` practical as the default despite running on CPU. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count.
+
+The `SILENCE_*` vars only matter when a user checks "Remove silences" at upload — see the pipeline section below.
 
 When run standalone (outside Docker), the backend reads these same variables from a `backend/.env` or the process environment via pydantic-settings.

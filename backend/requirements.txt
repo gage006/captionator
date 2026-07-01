@@ -4,6 +4,7 @@ python-multipart==0.0.31
 celery[redis]==5.3.6
 redis==5.0.4
 faster-whisper==1.0.3
+nltk==3.9.1
 requests==2.33.0
 sqlalchemy==2.0.30
 pydantic-settings==2.2.1

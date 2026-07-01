@@ -1,4 +1,5 @@
 from ..styles.definitions import STYLES
+from .emphasis import pick_emphasis_word
 
 _SCRIPT_HEADER = """\
 [Script Info]
@@ -116,6 +117,47 @@ def _build_compound_events(
     return events
 
 
+def _build_keyword_emphasis_events(
+    segments: list, style: dict, style_name: str, pos_prefix: str = ""
+) -> list:
+    """Render each fixed-size word group as a single line, popping the size of
+    one semantically meaningful word (noun/verb/adjective, picked by
+    emphasis.pick_emphasis_word) instead of a fixed trailing block. Falls back
+    to no emphasis for a group that has no content word."""
+    words = _flatten_words(segments)
+    if not words:
+        return []
+
+    wpg = style.get("words_per_group", 4)
+    accent = style.get("accent", {})
+    open_tags = _build_accent_open_tags(accent)
+    close_tags = "{\\r}" if open_tags else ""
+
+    events = []
+    for i in range(0, len(words), wpg):
+        chunk = words[i : i + wpg]
+        if not chunk:
+            continue
+
+        start = _format_ass_time(chunk[0]["start"])
+        end = _format_ass_time(chunk[-1]["end"])
+
+        emphasis_idx = pick_emphasis_word([w["word"] for w in chunk])
+        parts = []
+        for idx, w in enumerate(chunk):
+            if idx == emphasis_idx:
+                parts.append(f"{open_tags}{w['word']}{close_tags}")
+            else:
+                parts.append(w["word"])
+        text = " ".join(parts)
+
+        events.append(
+            f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{pos_prefix}{text}"
+        )
+
+    return events
+
+
 # ── Position & size overrides ─────────────────────────────────────────────────
 
 def _scale_style_line(style_line: str, scale: float) -> str:
@@ -164,7 +206,9 @@ def build(
     style_name = style["name"]
     pos_prefix = _build_pos_prefix(position, width, height)
 
-    if style.get("compound"):
+    if style.get("keyword_emphasis"):
+        event_lines = _build_keyword_emphasis_events(segments, style, style_name, pos_prefix)
+    elif style.get("compound"):
         event_lines = _build_compound_events(segments, style, style_name, pos_prefix)
     else:
         event_lines = []

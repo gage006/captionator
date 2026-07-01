@@ -1,5 +1,6 @@
 import json
 import shutil
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from .celery_app import celery
@@ -8,7 +9,8 @@ from ..models import Job
 from ..config import settings
 from .transcribe import transcribe
 from .ass_generator import build as build_ass
-from .ffmpeg_burn import get_video_dimensions, burn_subtitles
+from .ffmpeg_burn import get_video_dimensions, get_video_duration, burn_subtitles
+from .silence import detect_silences, compute_kept_ranges, trim_silences, remap_segments
 
 
 def _update_job(db: Session, job_id: str, **kwargs) -> None:
@@ -45,6 +47,29 @@ def _serializable_segments(segments: list) -> list:
     return out
 
 
+def write_transcript_files(output_dir: Path, segments: list) -> None:
+    """Persist transcript artifacts: SRT + TXT for download, JSON for preview/
+    render. Shared by the initial transcription (transcribe_video) and the
+    transcript-edit endpoint, so an edit saved before render keeps the
+    downloadable SRT/TXT consistent with whatever the eventual burn will show."""
+    srt_lines = []
+    for i, seg in enumerate(segments, 1):
+        srt_lines.extend([
+            str(i),
+            f"{_format_srt_time(seg['start'])} --> {_format_srt_time(seg['end'])}",
+            seg["text"],
+            "",
+        ])
+    (output_dir / "transcript.srt").write_text("\n".join(srt_lines), encoding="utf-8")
+    (output_dir / "transcript.txt").write_text(
+        " ".join(seg["text"] for seg in segments),
+        encoding="utf-8",
+    )
+    (output_dir / "transcript.json").write_text(
+        json.dumps({"segments": segments}), encoding="utf-8"
+    )
+
+
 @celery.task(name="transcribe_video")
 def transcribe_video(job_id: str) -> None:
     """Phase 1 (on upload): transcribe and persist the transcript so the frontend
@@ -78,25 +103,53 @@ def transcribe_video(job_id: str) -> None:
         result = transcribe(video_path, job.language, progress_callback=on_progress)
         segments = _serializable_segments(result["segments"])
 
-        # Persist transcript artifacts: SRT + TXT for download, JSON for preview/render.
-        srt_lines = []
-        for i, seg in enumerate(segments, 1):
-            srt_lines.extend([
-                str(i),
-                f"{_format_srt_time(seg['start'])} --> {_format_srt_time(seg['end'])}",
-                seg["text"],
-                "",
-            ])
-        (output_dir / "transcript.srt").write_text("\n".join(srt_lines), encoding="utf-8")
-        (output_dir / "transcript.txt").write_text(
-            " ".join(seg["text"] for seg in segments),
-            encoding="utf-8",
-        )
-        (output_dir / "transcript.json").write_text(
-            json.dumps({"segments": segments}), encoding="utf-8"
-        )
+        silence_removed_seconds = None
+        if job.remove_silences:
+            silence_removed_seconds = 0.0
+            _update_job(db, job_id, step="removing_silences", progress=95)
 
-        _update_job(db, job_id, status="ready", step="preview_ready", progress=100)
+            duration = get_video_duration(video_path)
+            silences = detect_silences(
+                video_path, settings.silence_threshold_db, settings.silence_min_duration
+            )
+            kept_ranges = compute_kept_ranges(
+                silences, duration, settings.silence_padding, settings.silence_max_segments
+            )
+
+            if not kept_ranges:
+                # Entire video flagged silent — refuse to produce a zero-duration
+                # output. remove_silences was explicitly requested, so silently
+                # ignoring it would be more surprising than failing loudly.
+                raise RuntimeError(
+                    "Silence removal would remove the entire video; aborting."
+                )
+
+            if not (len(kept_ranges) == 1 and kept_ranges[0] == (0.0, duration)):
+                trimmed_path = str(output_dir / "trimmed.mp4")
+
+                def on_trim_progress(fraction: float) -> None:
+                    _update_job(db, job_id, progress=95 + int(fraction * 4))
+
+                trim_silences(
+                    video_path, kept_ranges, trimmed_path, progress_callback=on_trim_progress
+                )
+
+                kept_total = sum(e - s for s, e in kept_ranges)
+                silence_removed_seconds = max(0.0, duration - kept_total)
+                segments = remap_segments(segments, kept_ranges)
+                video_path = trimmed_path
+
+        write_transcript_files(output_dir, segments)
+
+        _update_job(
+            db,
+            job_id,
+            status="ready",
+            step="preview_ready",
+            progress=100,
+            filename=video_path,
+            silence_removed_seconds=silence_removed_seconds,
+        )
 
     except Exception as exc:
         _update_job(db, job_id, status="failed", error=str(exc))

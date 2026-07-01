@@ -9,7 +9,7 @@ echo "=== [1/5] Creating test video fixture ==="
 bash scripts/create_test_fixture.sh
 
 echo ""
-echo "=== [2/5] Starting test stack (Whisper tiny.en) ==="
+echo "=== [2/5] Starting test stack (Whisper base.en) ==="
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 echo ""

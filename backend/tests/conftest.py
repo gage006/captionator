@@ -1,4 +1,7 @@
+import json
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -54,6 +57,46 @@ def wait_for_status(job_id: str, target: str, timeout: int = PIPELINE_TIMEOUT) -
             )
         time.sleep(2)
     pytest.fail(f"Job {job_id} did not reach {target} within {timeout}s")
+
+
+def upload_sample_with_silence_removal(sample_video: Path, language: str = "auto") -> str:
+    """Same as upload_sample, but opts into the remove-silences pipeline step."""
+    with open(sample_video, "rb") as f:
+        r = httpx.post(
+            f"{BASE_URL}/api/upload",
+            files={"file": ("sample.mp4", f, "video/mp4")},
+            data={"language": language, "remove_silences": "true"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    return r.json()["job_id"]
+
+
+def ffprobe_duration(path: Path) -> float:
+    """Local, app-independent duration probe — keeps the suite's "drive the live
+    stack over HTTP" boundary intact rather than importing backend internals."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(json.loads(result.stdout)["format"]["duration"])
+
+
+def download_to_tempfile(job_id: str, file_type: str = "video", suffix: str = ".mp4") -> Path:
+    """Download a finished job artifact to a local temp file so it can be ffprobed."""
+    r = httpx.get(f"{BASE_URL}/api/download/{job_id}/{file_type}", timeout=60)
+    r.raise_for_status()
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp.write(r.content)
+    tmp.close()
+    return Path(tmp.name)
 
 
 def render_job(job_id: str, style: str = "classic") -> httpx.Response:

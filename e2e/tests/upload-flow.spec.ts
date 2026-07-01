@@ -3,9 +3,16 @@ import path from 'path'
 import fs from 'fs'
 
 const FIXTURE = path.resolve(__dirname, '../../backend/tests/fixtures/sample.mp4')
+// sample.mp4 is a tone with no speech, so it never produces transcript text —
+// use a real-speech fixture to exercise actual transcript editing.
+const SPEECH_FIXTURE = path.resolve(
+  __dirname,
+  '../../backend/tests/fixtures/real_speech_synthetic.mp4',
+)
 const PIPELINE_TIMEOUT = 600_000
 const STYLE_COUNT = 9
 const hasFixture = fs.existsSync(FIXTURE)
+const hasSpeechFixture = fs.existsSync(SPEECH_FIXTURE)
 
 // Skip every test if the fixture hasn't been generated yet. beforeAll hooks below
 // also early-return on a missing fixture, since they run before this beforeEach.
@@ -41,6 +48,13 @@ test.describe('Idle state', () => {
     await page.goto('/')
     await expect(page.getByText('Caption Style')).toHaveCount(0)
     await expect(page.locator('.style-card')).toHaveCount(0)
+  })
+
+  test('shows the remove-silences checkbox, unchecked by default', async ({ page }) => {
+    await page.goto('/')
+    const checkbox = page.getByLabel(/Remove silences/i)
+    await expect(checkbox).toBeVisible()
+    await expect(checkbox).not.toBeChecked()
   })
 })
 
@@ -85,6 +99,92 @@ test.describe('Editing phase', () => {
   test('shows the source video preview', async () => {
     await expect(page.locator('video.preview-video')).toBeVisible()
   })
+
+  test('shows the Style and Transcript sections, both open by default', async () => {
+    await expect(page.getByRole('button', { name: 'Caption Style' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await expect(page.getByRole('button', { name: 'Transcript' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await expect(page.locator('.style-grid')).toBeVisible()
+  })
+
+  test('Style and Transcript sections collapse and expand independently', async () => {
+    const styleHeader = page.getByRole('button', { name: 'Caption Style' })
+    const transcriptHeader = page.getByRole('button', { name: 'Transcript' })
+
+    await transcriptHeader.click()
+    await expect(transcriptHeader).toHaveAttribute('aria-expanded', 'false')
+    // Collapsing Transcript must not affect Style.
+    await expect(styleHeader).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.style-grid')).toBeVisible()
+
+    await styleHeader.click()
+    await expect(styleHeader).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('.style-grid')).not.toBeVisible()
+
+    // Restore both open for any later test in this shared-page block.
+    await transcriptHeader.click()
+    await styleHeader.click()
+    await expect(transcriptHeader).toHaveAttribute('aria-expanded', 'true')
+    await expect(styleHeader).toHaveAttribute('aria-expanded', 'true')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Transcript editing — needs a fixture with real speech, since sample.mp4
+// produces no transcript text to edit.
+// ---------------------------------------------------------------------------
+
+test.describe('Transcript editing', () => {
+  test.beforeEach(async ({}, testInfo) => {
+    if (!hasSpeechFixture) {
+      testInfo.skip(
+        true,
+        'Speech fixture not found. Run: bash scripts/create_real_speech_fixtures.sh',
+      )
+    }
+  })
+
+  test('editing a segment and saving persists the new text', async ({ page }) => {
+    await page.goto('/')
+
+    // Capture the job_id so we can verify server-side persistence directly —
+    // the app has no URL/localStorage state to restore from on reload, so a
+    // page reload can't be used to prove the save round-tripped to the API.
+    const uploadResponse = page.waitForResponse((r) => r.url().includes('/api/upload'))
+    await page.locator('input[type="file"]').setInputFiles(SPEECH_FIXTURE)
+    const jobId = (await (await uploadResponse).json()).job_id as string
+    expect(jobId).toMatch(/^[a-f0-9]{32}$/)
+
+    await expect(
+      page.getByRole('button', { name: /Render with this style/i }),
+    ).toBeVisible({ timeout: PIPELINE_TIMEOUT })
+
+    const firstTextarea = page.locator('.transcript-textarea').first()
+    await expect(firstTextarea).toBeVisible()
+    const original = await firstTextarea.inputValue()
+    expect(original.length).toBeGreaterThan(0)
+
+    const saveBtn = page.getByRole('button', { name: /Save Transcript/i })
+    await expect(saveBtn).toBeDisabled() // nothing edited yet
+
+    await firstTextarea.fill('Edited by the e2e test.')
+    await expect(saveBtn).toBeEnabled()
+    await saveBtn.click()
+
+    await expect(page.getByText('Saved')).toBeVisible()
+    await expect(firstTextarea).toHaveValue('Edited by the e2e test.')
+
+    // Confirm the edit actually persisted server-side, not just local state.
+    const persisted = await (
+      await page.request.get(`/api/jobs/${jobId}/transcript`)
+    ).json()
+    expect(persisted.segments[0].text).toBe('Edited by the e2e test.')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -125,15 +225,14 @@ test.describe('Full pipeline', () => {
     await expect(sharedPage.getByText('Your video is ready!')).toBeVisible()
   })
 
-  test('shows all four download links', async () => {
-    await expect(sharedPage.getByText('Download Video (MP4)')).toBeVisible()
-    await expect(sharedPage.getByText('Download Subtitles (SRT)')).toBeVisible()
-    await expect(sharedPage.getByText('Download Transcript (TXT)')).toBeVisible()
-    await expect(sharedPage.getByText('Download ASS Subtitles')).toBeVisible()
+  test('shows all three download panel actions', async () => {
+    await expect(sharedPage.getByText('Download Video')).toBeVisible()
+    await expect(sharedPage.getByText('Download Transcript')).toBeVisible()
+    await expect(sharedPage.getByText('Copy AI Prompt')).toBeVisible()
   })
 
   test('download links point to the /api/download route', async () => {
-    const videoLink = sharedPage.getByText('Download Video (MP4)')
+    const videoLink = sharedPage.getByText('Download Video')
     const href = await videoLink.getAttribute('href')
     // Job ids are now full uuid4 hex (32 chars).
     expect(href).toMatch(/^\/api\/download\/[a-f0-9]{32}\/video$/)
@@ -142,17 +241,17 @@ test.describe('Full pipeline', () => {
   test('video download link triggers a file download', async () => {
     const [download] = await Promise.all([
       sharedPage.waitForEvent('download'),
-      sharedPage.getByText('Download Video (MP4)').click(),
+      sharedPage.getByText('Download Video').click(),
     ])
     expect(download.suggestedFilename()).toBe('captionated.mp4')
   })
 
-  test('SRT download link triggers a file download', async () => {
+  test('transcript download link triggers a file download', async () => {
     const [download] = await Promise.all([
       sharedPage.waitForEvent('download'),
-      sharedPage.getByText('Download Subtitles (SRT)').click(),
+      sharedPage.getByText('Download Transcript').click(),
     ])
-    expect(download.suggestedFilename()).toBe('transcript.srt')
+    expect(download.suggestedFilename()).toBe('transcript.txt')
   })
 
   test('shows "Process another video" button', async () => {
@@ -165,6 +264,61 @@ test.describe('Full pipeline', () => {
     // Back at idle: the editor's style picker and the success panel are gone.
     await expect(sharedPage.getByText('Caption Style')).toHaveCount(0)
     await expect(sharedPage.getByText('Your video is ready!')).not.toBeVisible()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Browser back/forward — the job id lives in the URL so navigating away and
+// pressing Back restores the job instead of dead-ending at a blank idle page.
+// ---------------------------------------------------------------------------
+
+test.describe('Browser navigation persistence', () => {
+  test('pressing Back after "Process another video" returns to the finished job', async ({
+    page,
+  }) => {
+    await page.goto('/')
+    await expect(page).toHaveURL(/\/$/)
+
+    await page.locator('input[type="file"]').setInputFiles(FIXTURE)
+    await expect(page).toHaveURL(/\?job=[a-f0-9]{32}/)
+
+    const renderBtn = page.getByRole('button', { name: /Render with this style/i })
+    await expect(renderBtn).toBeVisible({ timeout: PIPELINE_TIMEOUT })
+    await renderBtn.click()
+    await expect(page.getByText('Your video is ready!')).toBeVisible({
+      timeout: PIPELINE_TIMEOUT,
+    })
+    const jobUrl = page.url()
+
+    // Leave for a new "page" the way a user does via the reset button.
+    await page.getByText('Process another video').click()
+    await expect(page.getByText('Tap to select a video')).toBeVisible()
+    await expect(page).toHaveURL(/\/$/)
+
+    // Pressing Back must not be a dead end — it should restore the finished job.
+    await page.goBack()
+    await expect(page).toHaveURL(jobUrl)
+    await expect(page.getByText('Your video is ready!')).toBeVisible({ timeout: 15_000 })
+
+    // Forward returns to idle again.
+    await page.goForward()
+    await expect(page.getByText('Tap to select a video')).toBeVisible()
+  })
+
+  test('reloading mid-edit restores the same job from the URL', async ({ page }) => {
+    await page.goto('/')
+    await page.locator('input[type="file"]').setInputFiles(FIXTURE)
+    await expect(page.locator('.progress-tracker, .preview-editor')).toBeVisible({
+      timeout: PIPELINE_TIMEOUT,
+    })
+    const jobUrl = page.url()
+    expect(jobUrl).toMatch(/\?job=[a-f0-9]{32}/)
+
+    await page.reload()
+    await expect(page).toHaveURL(jobUrl)
+    await expect(page.locator('.progress-tracker, .preview-editor')).toBeVisible({
+      timeout: 15_000,
+    })
   })
 })
 

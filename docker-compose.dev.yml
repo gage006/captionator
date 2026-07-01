@@ -3,9 +3,9 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_PATH=/storage
-      - WHISPER_MODEL=tiny.en
+      - WHISPER_MODEL=base.en
   worker:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_PATH=/storage
-      - WHISPER_MODEL=tiny.en
+      - WHISPER_MODEL=base.en

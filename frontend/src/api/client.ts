@@ -24,6 +24,16 @@ export async function getTranscript(jobId: string): Promise<TranscriptResponse> 
   return res.data
 }
 
+export async function updateTranscript(
+  jobId: string,
+  texts: string[],
+): Promise<TranscriptResponse> {
+  const res = await api.put<TranscriptResponse>(`/jobs/${jobId}/transcript`, {
+    segments: texts.map((text) => ({ text })),
+  })
+  return res.data
+}
+
 export async function renderJob(
   jobId: string,
   req: RenderRequest,
@@ -37,15 +47,24 @@ export function sourceVideoUrl(jobId: string): string {
   return `/api/preview/${jobId}/source`
 }
 
+export async function fetchTranscriptText(jobId: string): Promise<string> {
+  const res = await api.get<string>(`/download/${jobId}/txt`, {
+    responseType: 'text',
+  })
+  return res.data
+}
+
 export function uploadVideo(
   file: File,
   language: string,
+  removeSilences: boolean,
   onProgress: (pct: number) => void,
 ): Promise<UploadResponse> {
   return new Promise((resolve, reject) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('language', language)
+    formData.append('remove_silences', String(removeSilences))
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/upload')

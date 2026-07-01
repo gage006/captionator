@@ -17,6 +17,7 @@ export type JobStatusValue =
 export type JobStep =
   | 'uploading'
   | 'transcribing'
+  | 'removing_silences'
   | 'preview_ready'
   | 'styling'
   | 'burning'
@@ -34,6 +35,8 @@ export interface JobStatus extends CaptionPlacement {
   step: JobStep
   progress: number
   style: string | null
+  remove_silences: boolean
+  silence_removed_seconds: number | null
   error: string | null
   created_at: string | null
   completed_at: string | null

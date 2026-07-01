@@ -17,6 +17,12 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # on CPU via AVX2 int8 kernels, and a much smaller image (no torch wheel).
 RUN pip install --no-cache-dir -r requirements.txt
 
+# NLTK's POS tagger (used to pick which word to visually emphasize in the
+# "Keyword Pop" caption style) baked into the image at build time so it never
+# needs network access at runtime.
+ENV NLTK_DATA=/usr/local/share/nltk_data
+RUN python -m nltk.downloader -d $NLTK_DATA averaged_perceptron_tagger_eng
+
 COPY app/ ./app/
 
 # Run the workload as an unprivileged user. The entrypoint stays root just long

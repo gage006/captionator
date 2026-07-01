@@ -39,5 +39,6 @@ celery.conf.beat_schedule = {
 
 @celery.on_after_configure.connect
 def init_db(sender, **kwargs):
-    from ..database import Base, engine
+    from ..database import Base, engine, ensure_schema
     Base.metadata.create_all(bind=engine)
+    ensure_schema()

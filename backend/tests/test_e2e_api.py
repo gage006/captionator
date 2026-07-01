@@ -26,7 +26,7 @@ PIPELINE_TIMEOUT = 600
 
 EXPECTED_STYLE_IDS = {
     "classic", "tiktok_bold", "karaoke", "clean_box",
-    "neon", "minimal", "cinematic", "duo_tone", "mixed_weight",
+    "neon", "minimal", "cinematic", "duo_tone", "mixed_weight", "keyword_pop",
 }
 
 # Every status the API can report across both phases.
@@ -235,7 +235,7 @@ class TestDownload:
 # Compound style pipeline
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("style_id", ["duo_tone", "mixed_weight"])
+@pytest.mark.parametrize("style_id", ["duo_tone", "mixed_weight", "keyword_pop"])
 def test_compound_style_pipeline_completes(sample_video: Path, style_id: str):
     """Compound styles have unique ASS-generation codepaths — each deserves a full run."""
     job_id = upload_sample(sample_video)

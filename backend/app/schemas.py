@@ -14,6 +14,8 @@ class JobStatus(BaseModel):
     position_x: float = 0.5
     position_y: float = 0.85
     scale: float = 1.0
+    remove_silences: bool = False
+    silence_removed_seconds: Optional[float] = None
     error: Optional[str] = None
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -47,6 +49,17 @@ class TranscriptSegment(BaseModel):
 
 class TranscriptResponse(BaseModel):
     segments: list[TranscriptSegment]
+
+
+class TranscriptEditSegment(BaseModel):
+    text: str
+
+
+class TranscriptEditRequest(BaseModel):
+    # Matched to the stored segments by position, so the count must agree with
+    # whatever GET /jobs/{job_id}/transcript last returned to the client. Only
+    # text is editable here — timing edits aren't part of this feature.
+    segments: list[TranscriptEditSegment]
 
 
 class StyleInfo(BaseModel):

@@ -6,13 +6,14 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from .config import settings
-from .database import engine, Base
+from .database import engine, Base, ensure_schema
 from .routers import upload, jobs, download, styles, preview
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_schema()
     yield
 
 

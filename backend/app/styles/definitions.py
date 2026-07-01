@@ -125,4 +125,22 @@ STYLES: dict[str, dict] = {
             "&H00000000,-1,0,0,0,100,100,0,0,1,7,0,5,60,60,200,1"
         ),
     },
+    "keyword_pop": {
+        "label": "Keyword Pop",
+        "description": "Semantic keyword emphasis — content words pop, filler stays small",
+        "preview_color": "#f2c94c",
+        "name": "KeywordPop",
+        "compound": True,
+        "keyword_emphasis": True,
+        "words_per_group": 4,
+        # scale-only accent: same gold fill/outline as the base style, just bigger
+        "accent": {
+            "scale_x": 170,
+            "scale_y": 170,
+        },
+        "ass_style": (
+            "Style: KeywordPop,Arial Black,54,&H004CC9F2,&H000000FF,&H00000000,"
+            "&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,60,60,200,1"
+        ),
+    },
 }

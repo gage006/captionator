@@ -34,14 +34,50 @@ h2 {
   letter-spacing: 0.1em;
 }
 
-/* Style Picker */
+/* Collapsible sections (Style, Transcript) */
+.collapsible-section {
+  border: 1px solid #2a2a2a;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: #141414;
+  border: none;
+  padding: 14px 16px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.collapsible-header h2 {
+  margin: 0;
+}
+
+.collapsible-chevron {
+  color: #555;
+  font-size: 11px;
+}
+
+.collapsible-content {
+  padding: 14px 16px 16px;
+}
+
+/* Style Picker — horizontal side-scrolling list */
 .style-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
   gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
 
 .style-card {
+  flex: 0 0 140px;
   background: #141414;
   border: 2px solid #2a2a2a;
   border-radius: 14px;
@@ -129,6 +165,32 @@ h2 {
   margin: 6px 0 0;
   color: #444;
   font-size: 13px;
+}
+
+.upload-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: #aaa;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.upload-option input[type='checkbox'] {
+  accent-color: #888;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.silence-removed-note {
+  margin: 8px 0 0;
+  color: #888;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* Progress bar shared styles */
@@ -391,9 +453,77 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
-.btn-primary:disabled {
+.btn-primary:disabled,
+.btn-secondary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Transcript editor */
+.transcript-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.transcript-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transcript-time {
+  font-size: 11px;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-textarea {
+  width: 100%;
+  background: #0c0c0c;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #e0e0e0;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.transcript-textarea:focus {
+  outline: none;
+  border-color: #555;
+}
+
+.transcript-save-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.transcript-save-row .btn-secondary {
+  width: auto;
+  padding: 10px 18px;
+}
+
+.transcript-status {
+  font-size: 13px;
+}
+
+.transcript-status-ok {
+  color: #4ade80;
+}
+
+.transcript-status-error {
+  color: #f87171;
+}
+
+.transcript-empty {
+  color: #555;
+  font-size: 13px;
+  margin: 0;
 }
 
 /* Buttons */

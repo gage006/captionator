@@ -1,9 +1,10 @@
 import type { JobStatus, JobStep } from '../types'
 
-const STEPS: JobStep[] = ['uploading', 'transcribing', 'styling', 'burning']
+const STEPS: JobStep[] = ['uploading', 'transcribing', 'removing_silences', 'styling', 'burning']
 const STEP_LABELS: Record<JobStep, string> = {
   uploading: 'Uploading',
   transcribing: 'Transcribing audio',
+  removing_silences: 'Removing silences',
   preview_ready: 'Ready to edit',
   styling: 'Generating captions',
   burning: 'Burning into video',
@@ -26,6 +27,11 @@ export function ProgressTracker({ status }: Props) {
         <progress value={status.progress} max={100} />
         <span className="progress-pct">{status.progress}%</span>
       </div>
+      {status.silence_removed_seconds != null && status.silence_removed_seconds > 0 && (
+        <p className="silence-removed-note">
+          Removed {status.silence_removed_seconds.toFixed(1)}s of silence
+        </p>
+      )}
       <div className="steps">
         {STEPS.map((step, i) => {
           const state =
