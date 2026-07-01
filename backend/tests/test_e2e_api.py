@@ -135,6 +135,18 @@ class TestRender:
         r = render_job("doesnotexist", style="classic")
         assert r.status_code == 404
 
+    def test_render_returns_409_when_already_rendering(self, sample_video: Path):
+        job_id = upload_sample(sample_video)
+        wait_for_status(job_id, "ready")
+
+        r1 = render_job(job_id, style="classic")
+        assert r1.status_code == 202
+
+        r2 = render_job(job_id, style="classic")
+        assert r2.status_code == 409
+
+        wait_for_status(job_id, "complete")
+
 
 # ---------------------------------------------------------------------------
 # Job polling

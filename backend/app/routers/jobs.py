@@ -1,5 +1,6 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Job
@@ -124,17 +125,31 @@ def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
     if not transcript_path.exists():
         raise HTTPException(status_code=409, detail="Transcript not ready yet")
 
-    job.style = req.style
-    job.position_x = req.position_x
-    job.position_y = req.position_y
-    job.scale = req.scale
-    job.status = "rendering"
-    job.step = "styling"
-    job.progress = 55
-    job.error = None
-    job.completed_at = None
+    # Atomic compare-and-swap: only start a render if one isn't already in
+    # flight. A plain read-then-write (check job.status, then set it) has a
+    # race window where two near-simultaneous requests (e.g. a double-click)
+    # can both pass the check and both enqueue render_video for the same
+    # job_id, corrupting the shared captions.ass/output.mp4 files.
+    result = db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status != "rendering")
+        .values(
+            style=req.style,
+            position_x=req.position_x,
+            position_y=req.position_y,
+            scale=req.scale,
+            status="rendering",
+            step="styling",
+            progress=55,
+            error=None,
+            completed_at=None,
+        )
+    )
     db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=409, detail="Job is already rendering")
 
+    db.refresh(job)
     celery.send_task("render_video", args=[job_id])
 
     return JobStatus(
