@@ -147,19 +147,24 @@ def trim_silences(
         output_path,
     ]
 
-    duration = get_video_duration(video_path) if progress_callback else 0.0
+    # The output is the concatenation of kept_ranges, not the original
+    # source — using get_video_duration(video_path) here (the pre-trim
+    # source) would understate progress for the whole run, since ffmpeg's
+    # out_time_us tracks position in the (shorter) trimmed output and would
+    # never reach this larger denominator.
+    target_duration = sum(e - s for s, e in kept_ranges)
 
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err_file:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
-            if not (progress_callback and duration):
+            if not (progress_callback and target_duration):
                 continue
             line = line.strip()
             if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
                 value = line.split("=", 1)[1]
                 if value.isdigit():
-                    progress_callback(min(1.0, int(value) / 1_000_000 / duration))
+                    progress_callback(min(1.0, int(value) / 1_000_000 / target_duration))
         returncode = proc.wait()
         if returncode != 0:
             err_file.seek(0)
