@@ -185,6 +185,24 @@ test.describe('Transcript editing', () => {
     ).json()
     expect(persisted.segments[0].text).toBe('Edited by the e2e test.')
   })
+
+  test('Render button is disabled while a transcript edit is unsaved', async ({ page }) => {
+    await page.goto('/')
+    await page.locator('input[type="file"]').setInputFiles(SPEECH_FIXTURE)
+
+    const renderBtn = page.getByRole('button', { name: /Render with this style/i })
+    await expect(renderBtn).toBeVisible({ timeout: PIPELINE_TIMEOUT })
+    await expect(renderBtn).toBeEnabled()
+
+    const firstTextarea = page.locator('.transcript-textarea').first()
+    await firstTextarea.fill('Edited but not saved yet.')
+    await expect(renderBtn).toBeDisabled()
+
+    const saveBtn = page.getByRole('button', { name: /Save Transcript/i })
+    await saveBtn.click()
+    await expect(page.getByText('Saved')).toBeVisible()
+    await expect(renderBtn).toBeEnabled()
+  })
 })
 
 // ---------------------------------------------------------------------------

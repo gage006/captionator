@@ -6,6 +6,7 @@ interface Props {
   jobId: string
   segments: TranscriptSegment[]
   onSegmentsChange: (segments: TranscriptSegment[]) => void
+  onBusyChange?: (busy: boolean) => void
 }
 
 function formatTime(seconds: number): string {
@@ -14,7 +15,7 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-export function TranscriptEditor({ jobId, segments, onSegmentsChange }: Props) {
+export function TranscriptEditor({ jobId, segments, onSegmentsChange, onBusyChange }: Props) {
   const [texts, setTexts] = useState<string[]>(() => segments.map((s) => s.text))
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [errorMessage, setErrorMessage] = useState('')
@@ -28,6 +29,13 @@ export function TranscriptEditor({ jobId, segments, onSegmentsChange }: Props) {
   }, [jobId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirty = texts.some((t, i) => t !== segments[i]?.text)
+
+  // Let the parent (PreviewEditor) know whether it's safe to render right
+  // now — rendering while an edit is unsaved or mid-save can race the
+  // transcript.json write that render_video reads from.
+  useEffect(() => {
+    onBusyChange?.(dirty || saveState === 'saving')
+  }, [dirty, saveState, onBusyChange])
 
   const handleChange = (index: number, value: string) => {
     setTexts((prev) => prev.map((t, i) => (i === index ? value : t)))

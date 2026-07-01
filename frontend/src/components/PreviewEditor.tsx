@@ -46,6 +46,7 @@ export function PreviewEditor({
   const [seekedToSample, setSeekedToSample] = useState(false)
   const [styleOpen, setStyleOpen] = useState(true)
   const [transcriptOpen, setTranscriptOpen] = useState(true)
+  const [transcriptBusy, setTranscriptBusy] = useState(false)
 
   // Intrinsic video size and the on-screen size of the video box, used to size the
   // overlay text in proportion to the eventual burned output.
@@ -261,12 +262,13 @@ export function PreviewEditor({
           jobId={jobId}
           segments={segments}
           onSegmentsChange={onSegmentsChange}
+          onBusyChange={setTranscriptBusy}
         />
       </CollapsibleSection>
 
       <button
         className="btn-primary"
-        disabled={!selectedStyle}
+        disabled={!selectedStyle || transcriptBusy}
         onClick={() =>
           onSave({
             style: selectedStyle,
@@ -278,6 +280,9 @@ export function PreviewEditor({
       >
         Render with this style
       </button>
+      {transcriptBusy && (
+        <p className="preview-hint">Save your transcript edits before rendering.</p>
+      )}
     </div>
   )
 }
