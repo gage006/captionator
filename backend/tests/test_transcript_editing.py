@@ -58,7 +58,7 @@ def test_editing_a_segment_gives_it_real_per_word_timing(speech_video: Path):
     for w1, w2 in zip(updated[0]["words"], updated[0]["words"][1:]):
         assert w1["end"] == w2["start"]
     assert updated[0]["words"][0]["start"] == segments[0]["start"]
-    assert updated[0]["words"][-1]["end"] == segments[0]["end"]
+    assert updated[0]["words"][-1]["end"] == pytest.approx(segments[0]["end"])
 
 
 def test_editing_one_segment_does_not_shift_chunking_in_other_segments(
