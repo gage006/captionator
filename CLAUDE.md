@@ -127,7 +127,7 @@ Output files land in `/storage/outputs/{job_id}/`: `output.mp4`, `transcript.srt
 | `components/StylePicker.tsx` | Caption style selection (embedded in the editor) |
 | `components/captionStyle.ts` | Shared CSS approximation of each style's text appearance, used by both StylePicker and the preview overlay |
 | `components/ProgressTracker.tsx` | Multi-step progress visualization |
-| `components/DownloadPanel.tsx` | Links to download MP4, SRT, TXT |
+| `components/DownloadPanel.tsx` | Download Video / Download Transcript links + a "Copy AI Prompt" button (fetches the transcript, interpolates it into an Instagram-caption prompt template, copies to clipboard) |
 | `api/client.ts` | Axios HTTP client (`uploadVideo`, `getTranscript`, `renderJob`, `sourceVideoUrl`); uses `XMLHttpRequest` for upload progress events |
 | `hooks/useJobPolling.ts` | Polls `GET /api/jobs/{job_id}` every 2s until a configurable terminal state (`ready` for transcribe phase, `complete` for render phase) |
 | `types/index.ts` | Shared TypeScript interfaces: `StyleInfo`, `JobStatus`, `UploadResponse`, `TranscriptSegment`, `RenderRequest`, `CaptionPlacement` |
