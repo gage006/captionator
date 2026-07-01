@@ -39,15 +39,24 @@ def _build_karaoke_text(words: list) -> str:
 
 # ── Compound style helpers ────────────────────────────────────────────────────
 
-def _flatten_words(segments: list) -> list:
-    """Collect every word with timing from Whisper word-timestamp output."""
-    all_words = []
+def _iter_word_groups(segments: list, wpg: int):
+    """Yield each segment's words chunked into fixed-size groups of `wpg`.
+
+    Chunking happens independently per segment (never spanning a segment
+    boundary) so editing one segment's text can only ever change that
+    segment's own group count — it can never shift chunk boundaries anywhere
+    else in the transcript.
+    """
     for seg in segments:
-        for w in seg.get("words", []):
-            word = w["word"].strip()
-            if word:
-                all_words.append({"word": word, "start": w["start"], "end": w["end"]})
-    return all_words
+        words = [
+            {"word": w["word"].strip(), "start": w["start"], "end": w["end"]}
+            for w in seg.get("words", [])
+            if w["word"].strip()
+        ]
+        for i in range(0, len(words), wpg):
+            chunk = words[i : i + wpg]
+            if chunk:
+                yield chunk
 
 
 def _build_accent_open_tags(accent: dict) -> str:
@@ -76,10 +85,6 @@ def _build_compound_events(
 ) -> list:
     """Render a compound style: group words into fixed-size chunks and apply
     inline override tags to the trailing 'accent' words of each chunk."""
-    words = _flatten_words(segments)
-    if not words:
-        return []
-
     wpg = style.get("words_per_group", 4)
     split_after = style.get("split_after", wpg // 2)
     accent = style.get("accent", {})
@@ -91,11 +96,7 @@ def _build_compound_events(
     separator = "\\N" if two_line else " "
 
     events = []
-    for i in range(0, len(words), wpg):
-        chunk = words[i : i + wpg]
-        if not chunk:
-            continue
-
+    for chunk in _iter_word_groups(segments, wpg):
         start = _format_ass_time(chunk[0]["start"])
         end = _format_ass_time(chunk[-1]["end"])
 
@@ -124,21 +125,13 @@ def _build_keyword_emphasis_events(
     one semantically meaningful word (noun/verb/adjective, picked by
     emphasis.pick_emphasis_word) instead of a fixed trailing block. Falls back
     to no emphasis for a group that has no content word."""
-    words = _flatten_words(segments)
-    if not words:
-        return []
-
     wpg = style.get("words_per_group", 4)
     accent = style.get("accent", {})
     open_tags = _build_accent_open_tags(accent)
     close_tags = "{\\r}" if open_tags else ""
 
     events = []
-    for i in range(0, len(words), wpg):
-        chunk = words[i : i + wpg]
-        if not chunk:
-            continue
-
+    for chunk in _iter_word_groups(segments, wpg):
         start = _format_ass_time(chunk[0]["start"])
         end = _format_ass_time(chunk[-1]["end"])
 
