@@ -83,21 +83,28 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
             updated.append(stored_seg)
             continue
         # Word-level timing can't be reliably re-derived from a free-text edit,
-        # so collapse the edited segment to a single span covering its whole
-        # duration. This only loses per-word highlight precision (karaoke /
-        # compound styles) on segments that were actually edited — segments
-        # left untouched keep their original word-level timing.
+        # so split the edited text into evenly-spaced word slots across the
+        # segment's original [start, end] span. Real per-word entries (rather
+        # than one giant fake "word") keep ass_generator's per-segment
+        # word-group chunking (_iter_word_groups) working sensibly on the
+        # edited segment, and let pick_emphasis_word POS-tag real single words
+        # instead of a whole sentence.
+        seg_start = stored_seg["start"]
+        seg_end = stored_seg["end"]
+        new_word_strs = new_text.split()
+        new_words = []
+        if new_word_strs:
+            step = max(seg_end - seg_start, 0.01) / len(new_word_strs)
+            for i, w in enumerate(new_word_strs):
+                new_words.append(
+                    {
+                        "word": w,
+                        "start": seg_start + i * step,
+                        "end": seg_start + (i + 1) * step,
+                    }
+                )
         updated.append(
-            {
-                "start": stored_seg["start"],
-                "end": stored_seg["end"],
-                "text": new_text,
-                "words": (
-                    [{"word": new_text, "start": stored_seg["start"], "end": stored_seg["end"]}]
-                    if new_text
-                    else []
-                ),
-            }
+            {"start": seg_start, "end": seg_end, "text": new_text, "words": new_words}
         )
 
     write_transcript_files(output_dir, updated)
