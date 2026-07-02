@@ -693,6 +693,31 @@ Nothing currently stops a burst of parallel uploads from filling the disk and bu
 
 - [ ] **Step 1: Write the failing test**
 
+> **Correction (2026-07-02, during execution):** the original version of this step
+> filled the cap with `sample.mp4`. That fixture is tone-only, so VAD lets a warm
+> model transcribe it near-instantly (~0.1s) — three uploads never stay active long
+> enough to fill the cap, and the test fails deterministically for the wrong
+> reason. Corrected to fill the cap with the ~20 s real-speech fixture (several
+> seconds of actual transcription each), which `test_transcript_editing.py`
+> already depends on the same way (skip-if-missing).
+
+In `backend/tests/conftest.py`, add a session-scoped speech fixture (after the
+`sample_video` fixture):
+
+```python
+SPEECH_FIXTURE = Path(__file__).parent / "fixtures" / "real_speech_synthetic.mp4"
+
+
+@pytest.fixture(scope="session")
+def speech_video() -> Path:
+    if not SPEECH_FIXTURE.exists():
+        pytest.skip(
+            f"Fixture not found: {SPEECH_FIXTURE}. "
+            "Run: bash scripts/create_real_speech_fixtures.sh"
+        )
+    return SPEECH_FIXTURE
+```
+
 In `backend/tests/test_upload_validation.py`, add the conftest helper import after the `import httpx` line:
 
 ```python
@@ -705,23 +730,23 @@ except ImportError:  # pragma: no cover
 Then append:
 
 ```python
-def test_uploads_beyond_active_job_cap_get_429(sample_video):
+def test_uploads_beyond_active_job_cap_get_429(speech_video):
     # Drain first: upload one job and wait for "ready". The single worker is
     # serial, so once ours is ready, everything queued before it is terminal
     # too — guaranteeing zero active jobs regardless of what earlier tests left.
-    drain_id = upload_sample(sample_video)
+    drain_id = upload_sample(speech_video)
     wait_for_status(drain_id, "ready")
 
-    # Fill the cap (dev override pins MAX_ACTIVE_JOBS=3). Each upload of the
-    # ~50 KB fixture is sub-second while a transcription takes several seconds
-    # even with a warm model, so all three are still active when the fourth
-    # upload arrives.
-    job_ids = [upload_sample(sample_video) for _ in range(3)]
+    # Fill the cap (dev override pins MAX_ACTIVE_JOBS=3). Each upload is
+    # sub-second while transcribing ~20s of real speech takes several seconds
+    # even with a warm model. (The tone-only sample.mp4 is NOT slow enough:
+    # VAD skips it almost instantly, so jobs would drain between uploads.)
+    job_ids = [upload_sample(speech_video) for _ in range(3)]
 
-    with open(sample_video, "rb") as f:
+    with open(speech_video, "rb") as f:
         r = httpx.post(
             f"{BASE_URL}/api/upload",
-            files={"file": ("sample.mp4", f, "video/mp4")},
+            files={"file": ("speech.mp4", f, "video/mp4")},
             data={"language": "auto"},
             timeout=60,
         )
@@ -733,7 +758,7 @@ def test_uploads_beyond_active_job_cap_get_429(sample_video):
         wait_for_status(job_id, "ready")
 ```
 
-(The `sample_video` fixture is defined in `conftest.py` and injected by pytest automatically — only the helper functions need the explicit import.)
+(The `speech_video` fixture is injected by pytest automatically — only the helper functions need the explicit import. `test_transcript_editing.py` keeps its own module-scoped fixture of the same name, which harmlessly shadows the conftest one.)
 
 - [ ] **Step 2: Pin the test cap in the dev override and run the test to verify it fails**
 
@@ -820,6 +845,17 @@ pytest backend/tests/ -v
 ```
 
 Expected: all pass. (Every other test uploads at most 1–2 jobs before waiting for a terminal state, so ambient active count never reaches 3.)
+
+> **Correction (2026-07-02, during Task 5's cold-stack verification):** the
+> parenthetical above holds only on a *warm* stack. On a cold stack (CI's
+> reality), the worker's first transcription includes the Whisper model load,
+> so sequential tests that upload without waiting pile jobs up in
+> `transcribing` and trip the dev cap — 8 failures/12 errors, reproduced 2/2.
+> Fix (committed with Task 5): `conftest.py`'s upload helpers
+> (`upload_sample`, `upload_sample_with_silence_removal`) now treat 429 as
+> the documented backpressure signal and poll-retry for up to ~120 s before
+> failing. The cap test is unaffected — it asserts the 429 with its own raw
+> `httpx.post`, bypassing the helpers.
 
 - [ ] **Step 8: Commit**
 
