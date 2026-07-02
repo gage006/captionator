@@ -5,6 +5,7 @@ active-job cap) — require the Docker stack running with the dev override
 limits are reachable with small fixtures; production defaults are far higher).
 """
 import subprocess
+import time
 
 import httpx
 
@@ -14,6 +15,28 @@ except ImportError:  # pragma: no cover
     from conftest import upload_sample, wait_for_status
 
 BASE_URL = "http://localhost"
+
+
+def _post_upload_tolerating_cap(file_bytes: bytes, filename: str) -> httpx.Response:
+    """Direct POST (no conftest retry helper) that only retries a transient 429.
+
+    The active-job cap check runs before content validation, so on a busy
+    stack (e.g. the cold-start pile-up) a content-rejection test could see
+    429 instead of its 415. These tests assert content rejections, not the
+    cap, so wait out a brief 429 burst; any other status returns as-is.
+    """
+    deadline = time.time() + 60
+    while True:
+        r = httpx.post(
+            f"{BASE_URL}/api/upload",
+            files={"file": (filename, file_bytes, "video/mp4")},
+            data={"language": "auto"},
+            timeout=30,
+        )
+        if r.status_code == 429 and time.time() < deadline:
+            time.sleep(2)
+            continue
+        return r
 
 
 def test_oversized_upload_is_rejected_with_413():
@@ -32,12 +55,7 @@ def test_oversized_upload_is_rejected_with_413():
 
 
 def test_non_video_upload_is_rejected_with_415():
-    r = httpx.post(
-        f"{BASE_URL}/api/upload",
-        files={"file": ("fake.mp4", b"this is not a video at all", "video/mp4")},
-        data={"language": "auto"},
-        timeout=30,
-    )
+    r = _post_upload_tolerating_cap(b"this is not a video at all", "fake.mp4")
     assert r.status_code == 415
     assert "video" in r.json()["detail"].lower()
 
@@ -56,13 +74,7 @@ def test_video_without_audio_track_is_rejected_with_415(tmp_path):
         capture_output=True,
         check=True,
     )
-    with open(silent, "rb") as f:
-        r = httpx.post(
-            f"{BASE_URL}/api/upload",
-            files={"file": ("no_audio.mp4", f, "video/mp4")},
-            data={"language": "auto"},
-            timeout=30,
-        )
+    r = _post_upload_tolerating_cap(silent.read_bytes(), "no_audio.mp4")
     assert r.status_code == 415
 
 

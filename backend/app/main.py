@@ -28,8 +28,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Captionator", lifespan=lifespan)
 
-# Register the upload size middleware first (outermost), before CORSMiddleware, so that
-# the 413 short-circuit response is wrapped by CORS and includes Access-Control-Allow-Origin.
+# Register the upload size middleware first so CORSMiddleware (registered later,
+# and therefore outermost — Starlette's add_middleware prepends) wraps the 413
+# short-circuit response and it includes Access-Control-Allow-Origin.
 @app.middleware("http")
 async def enforce_upload_size(request: Request, call_next):
     # FastAPI parses the whole multipart body (spooling it to disk) before the
