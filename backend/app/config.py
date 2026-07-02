@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # the app is same-origin behind nginx, so no CORS headers are needed. Set this
     # only when the API is called from a different origin.
     cors_origins: str = ""
+    # Root log level for the API and Celery worker/beat ("DEBUG", "INFO",
+    # "WARNING", ...). Applied by app.logging_setup.configure_logging(); note
+    # the worker's --loglevel CLI flag is superseded by this (the celery
+    # setup_logging hook takes over logging config entirely).
+    log_level: str = "INFO"
 
     # Silence detection threshold in dB: audio quieter than this (relative to
     # 0dBFS) counts as silence. -30dB is moderate — quiet enough to not trigger

@@ -68,7 +68,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | Path | Role |
 |------|------|
 | `main.py` | FastAPI app, router registration, lifespan handler; CORS is opt-in (only enabled when `CORS_ORIGINS` is set — no wildcard) |
-| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`) |
+| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`) |
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
@@ -143,6 +143,7 @@ WHISPER_COMPUTE_TYPE=int8_float32
 WHISPER_CPU_THREADS=0         # 0 = auto-detect physical cores
 CLEANUP_DELAY_SECONDS=600
 CORS_ORIGINS=                 # comma-separated; empty = same-origin only (no CORS)
+LOG_LEVEL=INFO                # backend + worker log verbosity (DEBUG/INFO/WARNING)
 SILENCE_THRESHOLD_DB=-30.0    # dBFS below which audio counts as silence
 SILENCE_MIN_DURATION=0.5      # seconds of quiet required to count as removable
 SILENCE_PADDING=0.15          # seconds kept around each cut, avoids clipping words

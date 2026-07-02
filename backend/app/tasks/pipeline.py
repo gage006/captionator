@@ -1,5 +1,7 @@
 import json
+import logging
 import shutil
+import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from .transcribe import transcribe
 from .ass_generator import build as build_ass
 from .ffmpeg_burn import get_video_dimensions, get_video_duration, burn_subtitles
 from .silence import detect_silences, compute_kept_ranges, trim_silences, remap_segments
+
+logger = logging.getLogger(__name__)
 
 
 def _update_job(db: Session, job_id: str, **kwargs) -> None:
@@ -87,6 +91,9 @@ def transcribe_video(job_id: str) -> None:
         if not job:
             return
 
+        logger.info("transcribe_video started: job=%s file=%s", job_id, job.filename)
+        started = time.monotonic()
+
         video_path = job.filename
         output_dir = settings.output_path / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +116,11 @@ def transcribe_video(job_id: str) -> None:
         result = transcribe(video_path, job.language, progress_callback=on_progress)
         segments = _serializable_segments(result["segments"])
         write_transcript_files(output_dir, segments)
+
+        logger.info(
+            "transcription complete: job=%s segments=%d took=%.1fs",
+            job_id, len(segments), time.monotonic() - started,
+        )
 
         silence_removed_seconds = None
         if job.remove_silences:
@@ -151,6 +163,11 @@ def transcribe_video(job_id: str) -> None:
                 # that the trim actually succeeded.
                 write_transcript_files(output_dir, segments)
 
+                logger.info(
+                    "silence removal: job=%s removed=%.2fs kept_ranges=%d",
+                    job_id, silence_removed_seconds, len(kept_ranges),
+                )
+
         _update_job(
             db,
             job_id,
@@ -161,7 +178,10 @@ def transcribe_video(job_id: str) -> None:
             silence_removed_seconds=silence_removed_seconds,
         )
 
+        logger.info("job ready for preview: job=%s", job_id)
+
     except Exception as exc:
+        logger.exception("transcribe_video failed: job=%s", job_id)
         _update_job(db, job_id, status="failed", error=str(exc))
         raise
     finally:
@@ -177,6 +197,9 @@ def render_video(job_id: str) -> None:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             return
+
+        logger.info("render_video started: job=%s style=%s", job_id, job.style)
+        started = time.monotonic()
 
         video_path = job.filename
         output_dir = settings.output_path / job_id
@@ -228,9 +251,12 @@ def render_video(job_id: str) -> None:
             completed_at=datetime.now(timezone.utc),
         )
 
+        logger.info("render complete: job=%s took=%.1fs", job_id, time.monotonic() - started)
+
         cleanup_job.apply_async(args=[job_id], countdown=settings.cleanup_delay_seconds)
 
     except Exception as exc:
+        logger.exception("render_video failed: job=%s", job_id)
         _update_job(db, job_id, status="failed", error=str(exc))
         raise
     finally:
@@ -241,6 +267,7 @@ def render_video(job_id: str) -> None:
 def cleanup_job(job_id: str) -> None:
     for base in (settings.upload_path, settings.output_path):
         shutil.rmtree(base / job_id, ignore_errors=True)
+    logger.info("cleaned up job files: job=%s", job_id)
     db = SessionLocal()
     try:
         _update_job(db, job_id, status="expired", step="deleted", progress=100)
@@ -295,6 +322,9 @@ def sweep_expired_jobs() -> None:
         ]
     finally:
         db.close()
+
+    if stale_ids:
+        logger.info("sweeping %d expired job(s)", len(stale_ids))
 
     for job_id in stale_ids:
         cleanup_job(job_id)

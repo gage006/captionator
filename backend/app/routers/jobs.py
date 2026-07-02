@@ -1,4 +1,5 @@
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from ..tasks.celery_app import celery
 from ..tasks.pipeline import write_transcript_files
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
@@ -110,6 +112,8 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
 
     write_transcript_files(output_dir, updated)
 
+    logger.info("transcript edited: job=%s segments=%d", job_id, len(updated))
+
     return TranscriptResponse(segments=updated)
 
 
@@ -151,6 +155,11 @@ def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
 
     db.refresh(job)
     celery.send_task("render_video", args=[job_id])
+
+    logger.info(
+        "render requested: job=%s style=%s pos=(%.2f,%.2f) scale=%.2f",
+        job_id, req.style, req.position_x, req.position_y, req.scale,
+    )
 
     return JobStatus(
         job_id=job.id,

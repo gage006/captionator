@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -7,13 +8,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from .config import settings
 from .database import engine, Base, ensure_schema
+from .logging_setup import configure_logging
 from .routers import upload, jobs, download, styles, preview
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema()
+    logger.info(
+        "API started: model=%s storage=%s", settings.whisper_model, settings.storage_path
+    )
     yield
 
 
@@ -80,6 +88,7 @@ def health(response: Response):
             checks[name] = "ok"
         except Exception as exc:
             checks[name] = f"error: {exc}"
+            logger.warning("health check failed: %s: %s", name, exc)
 
     healthy = all(v == "ok" for v in checks.values())
     response.status_code = 200 if healthy else 503

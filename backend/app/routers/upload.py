@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 import aiofiles
@@ -10,6 +11,7 @@ from ..schemas import UploadResponse
 from ..tasks.celery_app import celery
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload", response_model=UploadResponse, status_code=202)
@@ -35,11 +37,13 @@ async def upload_video(
         safe_filename = "video.mp4"
     dest = dest_dir / safe_filename
 
+    size_bytes = 0
     async with aiofiles.open(dest, "wb") as out:
         while True:
             chunk = await file.read(1024 * 1024)
             if not chunk:
                 break
+            size_bytes += len(chunk)
             await out.write(chunk)
 
     job = Job(
@@ -55,6 +59,11 @@ async def upload_video(
     db.commit()
 
     celery.send_task("transcribe_video", args=[job_id])
+
+    logger.info(
+        "upload accepted: job=%s file=%s size=%dB language=%s remove_silences=%s",
+        job_id, safe_filename, size_bytes, language, remove_silences,
+    )
 
     return UploadResponse(
         job_id=job_id,

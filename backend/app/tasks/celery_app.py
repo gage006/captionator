@@ -1,6 +1,7 @@
 import os
 import tempfile
 from celery import Celery
+from celery.signals import setup_logging
 
 celery = Celery(
     "captionator",
@@ -42,3 +43,13 @@ def init_db(sender, **kwargs):
     from ..database import Base, engine, ensure_schema
     Base.metadata.create_all(bind=engine)
     ensure_schema()
+
+
+@setup_logging.connect
+def _configure_logging(**_kwargs):
+    # Connecting this signal makes Celery skip its own logger hijacking, so
+    # worker/beat lines match the API's format and honor LOG_LEVEL (the
+    # --loglevel CLI flag is superseded). Task/module loggers propagate to the
+    # root handler configured here.
+    from ..logging_setup import configure_logging
+    configure_logging()
