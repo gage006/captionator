@@ -1,8 +1,9 @@
 import logging
 import os
+import shutil
 import uuid
 import aiofiles
-from fastapi import APIRouter, File, Form, UploadFile, Depends
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Depends
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Job
@@ -44,6 +45,16 @@ async def upload_video(
             if not chunk:
                 break
             size_bytes += len(chunk)
+            if size_bytes > settings.max_upload_bytes:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                logger.warning(
+                    "upload rejected (too large mid-stream): file=%s limit=%dMB",
+                    safe_filename, settings.max_upload_mb,
+                )
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Limit is {settings.max_upload_mb} MB.",
+                )
             await out.write(chunk)
 
     job = Job(

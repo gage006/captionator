@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     # setup_logging hook takes over logging config entirely).
     log_level: str = "INFO"
 
+    # Maximum accepted upload size in megabytes. Enforced twice by the backend:
+    # from the request's Content-Length in middleware (rejects honest oversized
+    # uploads before the body is read) and while streaming the file to disk
+    # (covers chunked/lying clients). Keep <= nginx's client_max_body_size
+    # (2000m), which remains the hard edge cap.
+    max_upload_mb: int = Field(default=2000, ge=1)
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self.max_upload_mb * 1024 * 1024
+
     # Silence detection threshold in dB: audio quieter than this (relative to
     # 0dBFS) counts as silence. -30dB is moderate — quiet enough to not trigger
     # on room tone/light breathing, loud enough to catch real gaps between speech.

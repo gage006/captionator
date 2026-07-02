@@ -3,7 +3,8 @@ import os
 from contextlib import asynccontextmanager
 
 import redis
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from .config import settings
@@ -38,6 +39,33 @@ if _cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+@app.middleware("http")
+async def enforce_upload_size(request: Request, call_next):
+    # FastAPI parses the whole multipart body (spooling it to disk) before the
+    # upload endpoint's code runs, so a size check inside the endpoint can't
+    # stop an oversized body from landing on disk first. Rejecting here, off
+    # the declared Content-Length, refuses honest oversized uploads before a
+    # single body byte is read. Chunked/lying clients are caught by the
+    # byte-count check in the upload endpoint, and nginx's client_max_body_size
+    # (2000m) caps everyone regardless.
+    if request.method == "POST" and request.url.path == "/api/upload":
+        try:
+            content_length = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > settings.max_upload_bytes:
+            logger.warning(
+                "upload rejected (too large): content_length=%d limit=%dMB",
+                content_length, settings.max_upload_mb,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"File too large. Limit is {settings.max_upload_mb} MB."},
+            )
+    return await call_next(request)
+
 
 app.include_router(upload.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")

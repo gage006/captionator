@@ -4,6 +4,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - STORAGE_PATH=/storage
       - WHISPER_MODEL=base.en
+      # Guardrail limits pinned low so the test suite can actually reach them
+      # with small fixtures (same decoupling rationale as WHISPER_MODEL above).
+      - MAX_UPLOAD_MB=50
   worker:
     environment:
       - REDIS_URL=redis://redis:6379/0
