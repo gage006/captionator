@@ -1,6 +1,9 @@
+import asyncio
+import json
 import logging
 import os
 import shutil
+import subprocess
 import uuid
 import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Depends
@@ -13,6 +16,30 @@ from ..tasks.celery_app import celery
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _probe_has_video_and_audio(path: str) -> bool:
+    """True iff ffprobe can decode the file and finds at least one video and
+    one audio stream — the minimum the pipeline needs (Whisper transcribes the
+    audio track; the burn step re-encodes the video track). ffprobe reads only
+    container headers, so this is fast regardless of file size."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        return False
+    codec_types = {s.get("codec_type") for s in streams}
+    return "video" in codec_types and "audio" in codec_types
 
 
 @router.post("/upload", response_model=UploadResponse, status_code=202)
@@ -56,6 +83,18 @@ async def upload_video(
                     detail=f"File too large. Limit is {settings.max_upload_mb} MB.",
                 )
             await out.write(chunk)
+
+    # Validate the bytes actually are a playable video before creating a job:
+    # this turns what would be a cryptic mid-pipeline Whisper/FFmpeg failure
+    # into an immediate, clear 415. Run in a thread so the (brief) subprocess
+    # call doesn't block the event loop.
+    if not await asyncio.to_thread(_probe_has_video_and_audio, str(dest)):
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        logger.warning("upload rejected (not a playable video): file=%s", safe_filename)
+        raise HTTPException(
+            status_code=415,
+            detail="Upload must be a video file with an audio track.",
+        )
 
     job = Job(
         id=job_id,

@@ -72,7 +72,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
-| `routers/upload.py` | `POST /api/upload` — saves file (filename sanitized to its basename; job id is a full uuid4 hex), creates Job, enqueues `transcribe_video` (no style at upload) |
+| `routers/upload.py` | `POST /api/upload` — guards first (size limit via middleware + stream count, ffprobe must find video+audio streams, active-job cap), then saves file (filename sanitized to its basename; job id is a full uuid4 hex), creates Job, enqueues `transcribe_video` (no style at upload) |
 | `routers/jobs.py` | `GET /api/jobs/{job_id}` (status); `GET /api/jobs/{job_id}/transcript` (segments for preview); `POST /api/jobs/{job_id}/render` (start render with style+placement) |
 | `routers/preview.py` | `GET /api/preview/{job_id}/source` — streams the uploaded source video inline (Range-enabled) for the preview scrubber |
 | `routers/download.py` | `GET /api/download/{job_id}/{file_type}` — streams output files |
