@@ -10,7 +10,7 @@ bash scripts/create_test_fixture.sh
 
 echo ""
 echo "=== [2/5] Starting test stack (Whisper base.en) ==="
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 echo ""
 echo "=== [3/5] Waiting for backend to be healthy ==="
@@ -19,7 +19,7 @@ until curl -sf http://localhost/api/health > /dev/null 2>&1; do
     TRIES=$((TRIES + 1))
     if [ "$TRIES" -ge 40 ]; then
         echo "ERROR: Backend did not become healthy after 120 seconds." >&2
-        docker-compose logs --tail=50
+        docker compose logs --tail=50
         exit 1
     fi
     echo "  waiting... ($TRIES/40)"
@@ -41,4 +41,4 @@ npx playwright test
 
 echo ""
 echo "=== All E2E tests passed ==="
-echo "Tear down with: docker-compose down"
+echo "Tear down with: docker compose down"

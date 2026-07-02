@@ -1,4 +1,4 @@
-name: Build and publish images
+name: CI
 
 on:
   push:
@@ -13,7 +13,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The fixture scripts need ffmpeg on the host (the runner image doesn't
+      # ship it).
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # Fixture generation is slow (the speech fixture apt-installs espeak-ng
+      # inside a throwaway container); cache the outputs keyed on the scripts.
+      - name: Cache generated test fixtures
+        uses: actions/cache@v4
+        with:
+          path: backend/tests/fixtures
+          key: fixtures-${{ hashFiles('scripts/create_test_fixture.sh', 'scripts/create_real_speech_fixtures.sh') }}
+
+      # Gehrig is skipped: it downloads from archive.org, which is too flaky a
+      # dependency for CI. Its tests pytest.skip when the fixture is absent.
+      - name: Generate speech fixture
+        run: SKIP_GEHRIG=1 bash scripts/create_real_speech_fixtures.sh
+
+      # Builds the stack with the dev override, waits for health, then runs
+      # pytest + Playwright — the exact suite developers run locally.
+      - name: Run e2e suite
+        run: bash scripts/run-e2e.sh
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml logs --tail=300
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

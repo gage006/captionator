@@ -62,7 +62,9 @@ else
     echo "Created: $SYNTHETIC_OUT"
 fi
 
-if [ -f "$GEHRIG_OUT" ]; then
+if [ "${SKIP_GEHRIG:-0}" = "1" ]; then
+    echo "SKIP_GEHRIG=1 — skipping the Gehrig fixture (its tests will pytest.skip)."
+elif [ -f "$GEHRIG_OUT" ]; then
     echo "Fixture already exists: $GEHRIG_OUT"
 else
     echo "Generating $GEHRIG_OUT (downloading public domain audio from archive.org)..."

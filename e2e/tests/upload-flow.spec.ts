@@ -10,7 +10,7 @@ const SPEECH_FIXTURE = path.resolve(
   '../../backend/tests/fixtures/real_speech_synthetic.mp4',
 )
 const PIPELINE_TIMEOUT = 600_000
-const STYLE_COUNT = 9
+const STYLE_COUNT = 10
 const hasFixture = fs.existsSync(FIXTURE)
 const hasSpeechFixture = fs.existsSync(SPEECH_FIXTURE)
 
