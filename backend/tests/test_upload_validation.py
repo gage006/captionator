@@ -8,6 +8,11 @@ import subprocess
 
 import httpx
 
+try:
+    from .conftest import upload_sample, wait_for_status
+except ImportError:  # pragma: no cover
+    from conftest import upload_sample, wait_for_status
+
 BASE_URL = "http://localhost"
 
 
@@ -59,3 +64,31 @@ def test_video_without_audio_track_is_rejected_with_415(tmp_path):
             timeout=30,
         )
     assert r.status_code == 415
+
+
+def test_uploads_beyond_active_job_cap_get_429(speech_video):
+    # Drain first: upload one job and wait for "ready". The single worker is
+    # serial, so once ours is ready, everything queued before it is terminal
+    # too — guaranteeing zero active jobs regardless of what earlier tests left.
+    drain_id = upload_sample(speech_video)
+    wait_for_status(drain_id, "ready")
+
+    # Fill the cap (dev override pins MAX_ACTIVE_JOBS=3). Each upload is
+    # sub-second while transcribing ~20s of real speech takes several seconds
+    # even with a warm model. (The tone-only sample.mp4 is NOT slow enough:
+    # VAD skips it almost instantly, so jobs would drain between uploads.)
+    job_ids = [upload_sample(speech_video) for _ in range(3)]
+
+    with open(speech_video, "rb") as f:
+        r = httpx.post(
+            f"{BASE_URL}/api/upload",
+            files={"file": ("speech.mp4", f, "video/mp4")},
+            data={"language": "auto"},
+            timeout=60,
+        )
+    assert r.status_code == 429
+    assert "busy" in r.json()["detail"].lower()
+
+    # Drain the queue so later tests never see leftover active jobs.
+    for job_id in job_ids:
+        wait_for_status(job_id, "ready")

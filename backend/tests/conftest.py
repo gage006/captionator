@@ -117,6 +117,19 @@ def sample_video() -> Path:
     return FIXTURE
 
 
+SPEECH_FIXTURE = Path(__file__).parent / "fixtures" / "real_speech_synthetic.mp4"
+
+
+@pytest.fixture(scope="session")
+def speech_video() -> Path:
+    if not SPEECH_FIXTURE.exists():
+        pytest.skip(
+            f"Fixture not found: {SPEECH_FIXTURE}. "
+            "Run: bash scripts/create_real_speech_fixtures.sh"
+        )
+    return SPEECH_FIXTURE
+
+
 @pytest.fixture(scope="session")
 def fully_silent_video(tmp_path_factory) -> Path:
     """A short, entirely-silent clip — silencedetect should flag the whole

@@ -53,6 +53,18 @@ async def upload_video(
     # stores the video and kicks off transcription.
     # Full 128-bit hex id: unguessable (the download/preview/transcript routes are
     # unauthenticated, so a short id would be enumerable) and collision-free.
+    active = (
+        db.query(Job)
+        .filter(Job.status.in_(("transcribing", "rendering")))
+        .count()
+    )
+    if active >= settings.max_active_jobs:
+        logger.warning("upload rejected (server busy): active_jobs=%d", active)
+        raise HTTPException(
+            status_code=429,
+            detail="Server is busy processing other videos. Try again in a few minutes.",
+        )
+
     job_id = uuid.uuid4().hex
     dest_dir = settings.upload_path / job_id
     dest_dir.mkdir(parents=True, exist_ok=True)

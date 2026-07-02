@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
 
+    # Maximum number of jobs allowed to be actively processing (status
+    # "transcribing" or "rendering") at once; uploads beyond it get 429. With a
+    # single Celery worker, an unbounded queue means unbounded disk usage and a
+    # starved worker. Soft cap: checked before the job row is created, so two
+    # truly simultaneous uploads can overshoot by one — fine for its purpose
+    # (backlog/abuse protection, not a hard scheduler).
+    max_active_jobs: int = Field(default=10, ge=1)
+
     # Silence detection threshold in dB: audio quieter than this (relative to
     # 0dBFS) counts as silence. -30dB is moderate — quiet enough to not trigger
     # on room tone/light breathing, loud enough to catch real gaps between speech.
