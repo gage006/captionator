@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -146,6 +147,7 @@ def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
             step="styling",
             progress=55,
             error=None,
+            render_started_at=datetime.now(timezone.utc),
             completed_at=None,
         )
     )

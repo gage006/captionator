@@ -279,7 +279,7 @@ def cleanup_job(job_id: str) -> None:
 def sweep_expired_jobs() -> None:
     """Durable backstop for cleanup_job.
 
-    Runs on a Celery Beat schedule and reaps two kinds of stale jobs:
+    Runs on a Celery Beat schedule and reaps three kinds of stale jobs:
       1. Completed jobs whose completed_at is older than the cleanup delay
          (the durable backstop for the per-job countdown cleanup).
       2. Abandoned or failed pre-render jobs (uploaded/transcribed but never
@@ -289,6 +289,17 @@ def sweep_expired_jobs() -> None:
          still in the preview editor. Only terminal/idle statuses are reaped
          here; an in-progress "rendering" job is left alone so a slow burn is
          never deleted out from under itself.
+      3. Stalled renders: jobs stuck in "rendering" far past render_started_at
+         (a worker crash mid-burn leaves them there forever, and since the
+         active-job cap counts "rendering", each one permanently eats a
+         MAX_ACTIVE_JOBS slot). These are marked failed — not deleted — which
+         frees the cap slot immediately; pass 2 reaps their files on a later
+         tick. RENDER_STALL_SECONDS is generous (hours vs. the minutes a real
+         burn takes) so a legitimately slow render is never declared dead. If
+         a wedged render's task does eventually run to completion anyway
+         (e.g. a worker comes back and drains the old queue), render_video
+         simply marks the job complete again — the burn genuinely finished,
+         so that's correct.
 
     Because the work is derived from the database on each tick (not held in worker
     memory), pending cleanups survive worker/beat restarts. Idempotent with the
@@ -299,8 +310,35 @@ def sweep_expired_jobs() -> None:
     abandoned_cutoff = now - timedelta(
         seconds=max(settings.cleanup_delay_seconds, 3600)
     )
+    render_stall_cutoff = now - timedelta(seconds=settings.render_stall_seconds)
     db = SessionLocal()
     try:
+        stalled_renders = (
+            db.query(Job)
+            .filter(
+                Job.status == "rendering",
+                # Rows predating the render_started_at column are left alone;
+                # every render started since the column exists sets it.
+                Job.render_started_at.isnot(None),
+                Job.render_started_at < render_stall_cutoff,
+            )
+            .all()
+        )
+        for job in stalled_renders:
+            job.status = "failed"
+            job.error = (
+                "Render stalled (no completion after "
+                f"{settings.render_stall_seconds}s) — likely a worker crash "
+                "mid-burn. Files will be cleaned up automatically."
+            )
+        if stalled_renders:
+            db.commit()
+            logger.warning(
+                "failed %d stalled render(s): %s",
+                len(stalled_renders),
+                ", ".join(job.id for job in stalled_renders),
+            )
+
         stale_ids = [
             row.id
             for row in db.query(Job.id)

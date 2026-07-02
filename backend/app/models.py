@@ -26,4 +26,8 @@ class Job(Base):
     silence_removed_seconds = Column(Float, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
+    # Stamped by the render endpoint when it flips status to "rendering", so
+    # sweep_expired_jobs can tell a live burn from one wedged by a worker
+    # crash (which would otherwise hold a MAX_ACTIVE_JOBS slot forever).
+    render_started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)

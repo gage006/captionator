@@ -68,7 +68,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | Path | Role |
 |------|------|
 | `main.py` | FastAPI app, router registration, lifespan handler; CORS is opt-in (only enabled when `CORS_ORIGINS` is set — no wildcard) |
-| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`, `MAX_UPLOAD_MB`, `MAX_ACTIVE_JOBS`) |
+| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`, `MAX_UPLOAD_MB`, `MAX_ACTIVE_JOBS`, `RENDER_STALL_SECONDS`) |
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
@@ -78,7 +78,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `routers/download.py` | `GET /api/download/{job_id}/{file_type}` — streams output files |
 | `routers/styles.py` | `GET /api/styles` — lists caption styles (incl. `base_font_size`) |
 | `tasks/celery_app.py` | Celery app init, broker=Redis, initializes DB on startup |
-| `tasks/pipeline.py` | `transcribe_video` (phase 1) + `render_video` (phase 2); `cleanup_job` deletes a job's files; `sweep_expired_jobs` is the Beat-driven durable cleanup backstop (also reaps abandoned pre-render uploads) |
+| `tasks/pipeline.py` | `transcribe_video` (phase 1) + `render_video` (phase 2); `cleanup_job` deletes a job's files; `sweep_expired_jobs` is the Beat-driven durable cleanup backstop (also reaps abandoned pre-render uploads and marks stalled renders failed so they release their `MAX_ACTIVE_JOBS` slot) |
 | `tasks/transcribe.py` | faster-whisper (CTranslate2) transcription (globally cached model), int8 CPU-quantized with VAD; returns segments with word-level timing. Progress driven off each segment's end time vs. audio duration |
 | `tasks/silence.py` | Optional, opt-in (`Job.remove_silences`) step run inside phase 1: `detect_silences` (FFmpeg `silencedetect`), `compute_kept_ranges` (pure; pads/merges/caps), `trim_silences` (FFmpeg `trim`/`atrim`+`concat` re-encode — cuts aren't keyframe-aligned, so `-c:v copy` isn't possible), `remap_segments` (pure; re-times every segment/word onto the trimmed timeline) |
 | `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing; `keyword_emphasis` styles pop one semantic word per fixed-size group instead of a trailing block |
@@ -146,6 +146,7 @@ CORS_ORIGINS=                 # comma-separated; empty = same-origin only (no CO
 LOG_LEVEL=INFO                # backend + worker log verbosity (DEBUG/INFO/WARNING)
 MAX_UPLOAD_MB=2000            # app-level upload size cap; keep <= nginx's 2000m edge cap
 MAX_ACTIVE_JOBS=10            # concurrent processing cap; extra uploads get 429
+RENDER_STALL_SECONDS=7200     # sweep marks a job failed after this long in "rendering" (frees its cap slot)
 SILENCE_THRESHOLD_DB=-30.0    # dBFS below which audio counts as silence
 SILENCE_MIN_DURATION=0.5      # seconds of quiet required to count as removable
 SILENCE_PADDING=0.15          # seconds kept around each cut, avoids clipping words

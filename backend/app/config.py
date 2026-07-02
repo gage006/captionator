@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     # (backlog/abuse protection, not a hard scheduler).
     max_active_jobs: int = Field(default=10, ge=1)
 
+    # How long a job may sit in "rendering" (measured from render_started_at)
+    # before sweep_expired_jobs declares the render stalled and marks the job
+    # failed, freeing its MAX_ACTIVE_JOBS slot. A worker crash mid-burn
+    # otherwise leaves the job "rendering" forever (the sweep deliberately
+    # never deletes in-progress renders). Default is generous — 2 hours vs.
+    # the minutes a real burn takes — so no legitimate render is ever killed;
+    # lower it only if your videos are small and you want faster recovery.
+    render_stall_seconds: int = Field(default=7200, ge=60)
+
     # Silence detection threshold in dB: audio quieter than this (relative to
     # 0dBFS) counts as silence. -30dB is moderate — quiet enough to not trigger
     # on room tone/light breathing, loud enough to catch real gaps between speech.
