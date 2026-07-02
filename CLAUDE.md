@@ -13,7 +13,7 @@ docker compose logs -f worker   # Stream Celery worker logs
 docker compose logs -f backend  # Stream FastAPI logs
 ```
 
-The `backend` and `nginx` services declare both an `image:` (GHCR) and a `build:` context. `docker compose pull` + `up` uses the prebuilt images; `up --build` rebuilds from the Dockerfiles. The `nginx` image is multi-stage: it compiles the frontend (`./frontend`) and bakes the static build in alongside the edge proxy config, so its build context is the repo root. CI (`.github/workflows/docker-publish.yml`) runs the full e2e suite (`scripts/run-e2e.sh`) on every push/PR, and images publish to GHCR on push to `main` and `v*` tags only after tests pass. The Gehrig speech fixture is skipped in CI (`SKIP_GEHRIG=1`); its tests skip gracefully. Override the published tag at run time with `IMAGE_TAG` (default `latest`).
+The `backend` and `nginx` services declare both an `image:` (GHCR) and a `build:` context. `docker compose pull` + `up` uses the prebuilt images; `up --build` rebuilds from the Dockerfiles. The `nginx` image is multi-stage: it compiles the frontend (`./frontend`) and bakes the static build in alongside the edge proxy config, so its build context is the repo root. CI (`.github/workflows/docker-publish.yml`) runs the full e2e suite (`scripts/run-e2e.sh`) on every push/PR, and images publish to GHCR on push to `main` and `v*` tags only after tests pass. The speech fixtures are committed to the repo, so the Gehrig tests run in CI too; `SKIP_GEHRIG=1` only prevents the flaky archive.org re-download if the fixture is ever absent. Override the published tag at run time with `IMAGE_TAG` (default `latest`).
 
 ### Frontend (standalone)
 ```bash
