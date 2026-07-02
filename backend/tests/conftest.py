@@ -28,17 +28,39 @@ def pytest_configure(config):
 # a separate render call burns the captions (-> "complete").
 # ---------------------------------------------------------------------------
 
+def _upload_with_429_retry(sample_video: Path, filename: str, data: dict) -> str:
+    """POST a multipart upload, retrying on 429 up to a ~120s deadline.
+
+    WHY: on a cold stack (fresh `docker compose up`, exactly what CI does),
+    the worker's first transcription pays the Whisper model-load cost
+    (tens of seconds). Sequential tests that upload without draining pile
+    jobs up in "transcribing" and can trip MAX_ACTIVE_JOBS (pinned to 3 in
+    the dev override) before the queue has a chance to drain. That 429 is
+    the server's documented backpressure signal ("Server is busy processing
+    other videos. Try again in a few minutes.") — a well-behaved client
+    retries rather than treating it as fatal. Past the deadline a stack is
+    presumed genuinely wedged, and we fall through to raise_for_status() so
+    the test still fails loudly instead of hanging forever.
+    """
+    deadline = time.time() + 120
+    while True:
+        with open(sample_video, "rb") as f:
+            r = httpx.post(
+                f"{BASE_URL}/api/upload",
+                files={"file": (filename, f, "video/mp4")},
+                data=data,
+                timeout=60,
+            )
+        if r.status_code == 429 and time.time() < deadline:
+            time.sleep(2)
+            continue
+        r.raise_for_status()
+        return r.json()["job_id"]
+
+
 def upload_sample(sample_video: Path, language: str = "auto") -> str:
     """Upload the fixture and return its job_id. Style is NOT chosen here anymore."""
-    with open(sample_video, "rb") as f:
-        r = httpx.post(
-            f"{BASE_URL}/api/upload",
-            files={"file": ("sample.mp4", f, "video/mp4")},
-            data={"language": language},
-            timeout=60,
-        )
-    r.raise_for_status()
-    return r.json()["job_id"]
+    return _upload_with_429_retry(sample_video, "sample.mp4", {"language": language})
 
 
 def wait_for_status(job_id: str, target: str, timeout: int = PIPELINE_TIMEOUT) -> dict:
@@ -61,15 +83,9 @@ def wait_for_status(job_id: str, target: str, timeout: int = PIPELINE_TIMEOUT) -
 
 def upload_sample_with_silence_removal(sample_video: Path, language: str = "auto") -> str:
     """Same as upload_sample, but opts into the remove-silences pipeline step."""
-    with open(sample_video, "rb") as f:
-        r = httpx.post(
-            f"{BASE_URL}/api/upload",
-            files={"file": ("sample.mp4", f, "video/mp4")},
-            data={"language": language, "remove_silences": "true"},
-            timeout=60,
-        )
-    r.raise_for_status()
-    return r.json()["job_id"]
+    return _upload_with_429_retry(
+        sample_video, "sample.mp4", {"language": language, "remove_silences": "true"}
+    )
 
 
 def ffprobe_duration(path: Path) -> float:
