@@ -28,19 +28,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Captionator", lifespan=lifespan)
 
-# Only enable CORS when explicit origins are configured. The default deployment is
-# same-origin behind nginx, so no wildcard is needed (and a wildcard would let any
-# site script the unauthenticated API on a user's behalf).
-_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
-if _cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_cors_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-
+# Register the upload size middleware first (outermost), before CORSMiddleware, so that
+# the 413 short-circuit response is wrapped by CORS and includes Access-Control-Allow-Origin.
 @app.middleware("http")
 async def enforce_upload_size(request: Request, call_next):
     # FastAPI parses the whole multipart body (spooling it to disk) before the
@@ -65,6 +54,19 @@ async def enforce_upload_size(request: Request, call_next):
                 content={"detail": f"File too large. Limit is {settings.max_upload_mb} MB."},
             )
     return await call_next(request)
+
+
+# Only enable CORS when explicit origins are configured. The default deployment is
+# same-origin behind nginx, so no wildcard is needed (and a wildcard would let any
+# site script the unauthenticated API on a user's behalf).
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 app.include_router(upload.router, prefix="/api")
