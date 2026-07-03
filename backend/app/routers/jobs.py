@@ -81,7 +81,11 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
         )
 
     updated = []
+    deleted = 0
     for stored_seg, edit in zip(stored, req.segments):
+        if edit.delete:
+            deleted += 1
+            continue
         new_text = edit.text.strip()
         if new_text == stored_seg["text"]:
             updated.append(stored_seg)
@@ -111,9 +115,17 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
             {"start": seg_start, "end": seg_end, "text": new_text, "words": new_words}
         )
 
+    if not updated:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete every segment — at least one caption must remain.",
+        )
+
     write_transcript_files(output_dir, updated)
 
-    logger.info("transcript edited: job=%s segments=%d", job_id, len(updated))
+    logger.info(
+        "transcript edited: job=%s segments=%d deleted=%d", job_id, len(updated), deleted
+    )
 
     return TranscriptResponse(segments=updated)
 

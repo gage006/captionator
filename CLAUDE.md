@@ -73,7 +73,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine, `SessionLocal`, DB dependency for injection |
 | `routers/upload.py` | `POST /api/upload` — guards first (size limit via middleware + stream count, ffprobe must find video+audio streams, active-job cap), then saves file (filename sanitized to its basename; job id is a full uuid4 hex), creates Job, enqueues `transcribe_video` (no style at upload) |
-| `routers/jobs.py` | `GET /api/jobs/{job_id}` (status); `GET /api/jobs/{job_id}/transcript` (segments for preview); `POST /api/jobs/{job_id}/render` (start render with style+placement) |
+| `routers/jobs.py` | `GET /api/jobs/{job_id}` (status); `GET /api/jobs/{job_id}/transcript` (segments for preview); `PUT /api/jobs/{job_id}/transcript` (edit segment text and/or flag segments `delete: true` — positional against the stored list, count must match as a staleness guard, edited text gets evenly re-spaced word timing, ≥1 segment must survive); `POST /api/jobs/{job_id}/render` (start render with style+placement, atomic CAS on status) |
 | `routers/preview.py` | `GET /api/preview/{job_id}/source` — streams the uploaded source video inline (Range-enabled) for the preview scrubber |
 | `routers/download.py` | `GET /api/download/{job_id}/{file_type}` — streams output files |
 | `routers/styles.py` | `GET /api/styles` — lists caption styles (incl. `base_font_size`) |

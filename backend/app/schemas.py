@@ -53,6 +53,11 @@ class TranscriptResponse(BaseModel):
 
 class TranscriptEditSegment(BaseModel):
     text: str
+    # Deletions ride on the full positional list rather than shrinking it: the
+    # client flags rows instead of omitting them, so the endpoint's count check
+    # still catches a payload built against a stale baseline (which would
+    # otherwise delete the wrong segments by shifted position).
+    delete: bool = False
 
 
 class TranscriptEditRequest(BaseModel):

@@ -104,3 +104,82 @@ def test_editing_one_segment_does_not_shift_chunking_in_other_segments(
         if seg["words"]
     )
     assert len(dialogue_lines) == expected_lines
+
+
+def test_deleting_a_segment_drops_it_and_rejects_stale_resubmission(
+    speech_video: Path,
+):
+    job_id = upload_sample(speech_video)
+    wait_for_status(job_id, "ready")
+
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    segments = r.json()["segments"]
+    if len(segments) < 2:
+        pytest.skip("fixture produced only one segment this run; nothing to delete")
+
+    # Deleting every segment must be rejected — an empty transcript would
+    # break downloads and produce a captionless render.
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript",
+        json={"segments": [{"text": s["text"], "delete": True} for s in segments]},
+        timeout=15,
+    )
+    assert r.status_code == 400
+
+    stale_payload = {"segments": [{"text": s["text"]} for s in segments]}
+
+    # Delete just the first segment; survivors must come back byte-identical
+    # (deletion must never re-time or otherwise disturb the segments it keeps).
+    edits = [{"text": s["text"]} for s in segments]
+    edits[0]["delete"] = True
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript",
+        json={"segments": edits},
+        timeout=15,
+    )
+    assert r.status_code == 200
+    updated = r.json()["segments"]
+    assert len(updated) == len(segments) - 1
+    assert updated == segments[1:]
+
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    assert r.json()["segments"] == segments[1:]
+
+    # A resubmission built against the pre-delete baseline now has the wrong
+    # count — it must 400 rather than silently deleting by shifted position.
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript", json=stale_payload, timeout=15
+    )
+    assert r.status_code == 400
+
+
+def test_deleted_segment_is_absent_from_rendered_captions(speech_video: Path):
+    job_id = upload_sample(speech_video)
+    wait_for_status(job_id, "ready")
+
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    segments = r.json()["segments"]
+    if len(segments) < 2:
+        pytest.skip("fixture produced only one segment this run; nothing to delete")
+
+    edits = [{"text": s["text"]} for s in segments]
+    edits[0]["delete"] = True
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript",
+        json={"segments": edits},
+        timeout=15,
+    )
+    assert r.status_code == 200
+
+    r = render_job(job_id, style="classic")
+    assert r.status_code == 202
+    wait_for_status(job_id, "complete")
+
+    ass_text = httpx.get(f"{BASE_URL}/api/download/{job_id}/ass", timeout=15).text
+    dialogue_lines = [l for l in ass_text.splitlines() if l.startswith("Dialogue:")]
+
+    # classic emits exactly one Dialogue line per segment, so the burn must
+    # contain one line per SURVIVING segment and none with the deleted text.
+    assert len(dialogue_lines) == len(segments) - 1
+    deleted_text = segments[0]["text"]
+    assert all(deleted_text not in line for line in dialogue_lines)
