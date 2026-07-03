@@ -176,7 +176,7 @@ test.describe('Transcript editing', () => {
     await expect(saveBtn).toBeEnabled()
     await saveBtn.click()
 
-    await expect(page.getByText('Saved')).toBeVisible()
+    await expect(page.locator('.transcript-status-ok')).toHaveText('Saved')
     await expect(firstTextarea).toHaveValue('Edited by the e2e test.')
 
     // Confirm the edit actually persisted server-side, not just local state.
@@ -184,6 +184,49 @@ test.describe('Transcript editing', () => {
       await page.request.get(`/api/jobs/${jobId}/transcript`)
     ).json()
     expect(persisted.segments[0].text).toBe('Edited by the e2e test.')
+  })
+
+  test('deleting a segment in the panel persists after save', async ({ page }) => {
+    await page.goto('/')
+
+    const uploadResponse = page.waitForResponse((r) => r.url().includes('/api/upload'))
+    await page.locator('input[type="file"]').setInputFiles(SPEECH_FIXTURE)
+    const jobId = (await (await uploadResponse).json()).job_id as string
+
+    const renderBtn = page.getByRole('button', { name: /Render with this style/i })
+    await expect(renderBtn).toBeVisible({ timeout: PIPELINE_TIMEOUT })
+
+    const rows = page.locator('.transcript-row')
+    const rowCount = await rows.count()
+    test.skip(rowCount < 2, 'fixture produced only one segment this run; nothing to delete')
+
+    const saveBtn = page.getByRole('button', { name: /Save Transcript/i })
+    await expect(saveBtn).toBeDisabled()
+
+    // Flag the first segment for deletion: row dims, its textarea locks, the
+    // button flips to Undo, and the pending change gates rendering.
+    await page.getByRole('button', { name: 'Delete segment 1' }).click()
+    await expect(rows.first()).toHaveClass(/deleted/)
+    await expect(rows.first().locator('.transcript-textarea')).toBeDisabled()
+    await expect(saveBtn).toBeEnabled()
+    await expect(renderBtn).toBeDisabled()
+
+    // Undo restores a clean slate.
+    await page.getByRole('button', { name: 'Undo delete' }).click()
+    await expect(rows.first()).not.toHaveClass(/deleted/)
+    await expect(saveBtn).toBeDisabled()
+    await expect(renderBtn).toBeEnabled()
+
+    // Delete for real and save: the row disappears and the API agrees.
+    await page.getByRole('button', { name: 'Delete segment 1' }).click()
+    await saveBtn.click()
+    await expect(page.locator('.transcript-status-ok')).toHaveText('Saved')
+    await expect(rows).toHaveCount(rowCount - 1)
+
+    const persisted = await (
+      await page.request.get(`/api/jobs/${jobId}/transcript`)
+    ).json()
+    expect(persisted.segments.length).toBe(rowCount - 1)
   })
 
   test('Render button is disabled while a transcript edit is unsaved', async ({ page }) => {
@@ -200,8 +243,110 @@ test.describe('Transcript editing', () => {
 
     const saveBtn = page.getByRole('button', { name: /Save Transcript/i })
     await saveBtn.click()
-    await expect(page.getByText('Saved')).toBeVisible()
+    await expect(page.locator('.transcript-status-ok')).toHaveText('Saved')
     await expect(renderBtn).toBeEnabled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Overlay click-to-edit — clicking the caption block (without dragging) opens
+// an inline editor for the currently displayed segment, feeding the same
+// shared draft as the panel.
+// ---------------------------------------------------------------------------
+
+test.describe('Overlay click-to-edit', () => {
+  test.beforeEach(async ({}, testInfo) => {
+    if (!hasSpeechFixture) {
+      testInfo.skip(
+        true,
+        'Speech fixture not found. Run: bash scripts/create_real_speech_fixtures.sh',
+      )
+    }
+  })
+
+  async function uploadAndWaitForEditor(page: Page): Promise<string> {
+    await page.goto('/')
+    const uploadResponse = page.waitForResponse((r) => r.url().includes('/api/upload'))
+    await page.locator('input[type="file"]').setInputFiles(SPEECH_FIXTURE)
+    const jobId = (await (await uploadResponse).json()).job_id as string
+    await expect(
+      page.getByRole('button', { name: /Render with this style/i }),
+    ).toBeVisible({ timeout: PIPELINE_TIMEOUT })
+    await expect(page.locator('.caption-block')).toBeVisible()
+    return jobId
+  }
+
+  test('clicking the caption opens inline editing that feeds the shared draft', async ({
+    page,
+  }) => {
+    const jobId = await uploadAndWaitForEditor(page)
+
+    // The preview seeks into the first caption, so the overlay shows (and the
+    // click edits) segment 1.
+    await page.locator('.caption-block').click()
+    const editArea = page.locator('.caption-edit-textarea')
+    await expect(editArea).toBeVisible()
+
+    await editArea.fill('Edited from the overlay.')
+    await editArea.press('Enter')
+    await expect(editArea).toHaveCount(0)
+
+    // Committed to the shared draft: overlay preview + panel row both show it.
+    await expect(page.locator('.caption-text')).toContainText('Edited from the overlay.')
+    await expect(page.locator('.transcript-textarea').first()).toHaveValue(
+      'Edited from the overlay.',
+    )
+
+    // Unsaved edit gates rendering; saving persists it server-side.
+    const saveBtn = page.getByRole('button', { name: /Save Transcript/i })
+    await expect(saveBtn).toBeEnabled()
+    await expect(
+      page.getByRole('button', { name: /Render with this style/i }),
+    ).toBeDisabled()
+    await saveBtn.click()
+    await expect(page.locator('.transcript-status-ok')).toHaveText('Saved')
+    const persisted = await (
+      await page.request.get(`/api/jobs/${jobId}/transcript`)
+    ).json()
+    expect(persisted.segments[0].text).toBe('Edited from the overlay.')
+  })
+
+  test('Escape cancels an overlay edit without touching the draft', async ({ page }) => {
+    await uploadAndWaitForEditor(page)
+
+    const original = await page.locator('.transcript-textarea').first().inputValue()
+
+    await page.locator('.caption-block').click()
+    const editArea = page.locator('.caption-edit-textarea')
+    await expect(editArea).toBeVisible()
+    await editArea.fill('This text must be discarded.')
+    await editArea.press('Escape')
+    await expect(editArea).toHaveCount(0)
+
+    await expect(page.locator('.transcript-textarea').first()).toHaveValue(original)
+    await expect(page.getByRole('button', { name: /Save Transcript/i })).toBeDisabled()
+  })
+
+  test('dragging the caption still repositions it without opening the editor', async ({
+    page,
+  }) => {
+    await uploadAndWaitForEditor(page)
+
+    const block = page.locator('.caption-block')
+    const before = await block.evaluate((el) => el.style.left + '|' + el.style.top)
+
+    const box = await block.boundingBox()
+    if (!box) throw new Error('caption block has no bounding box')
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 - 30, {
+      steps: 5,
+    })
+    await page.mouse.up()
+
+    await expect(page.locator('.caption-edit-textarea')).toHaveCount(0)
+    const after = await block.evaluate((el) => el.style.left + '|' + el.style.top)
+    expect(after).not.toBe(before)
   })
 })
 

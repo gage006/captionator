@@ -65,6 +65,16 @@ export interface TranscriptResponse {
   segments: TranscriptSegment[]
 }
 
+/**
+ * One row of a PUT /jobs/{id}/transcript payload. Deletions are flagged, not
+ * omitted: the server matches rows to stored segments by position and uses the
+ * count as a staleness guard, so the full list must always be echoed back.
+ */
+export interface TranscriptEdit {
+  text: string
+  delete?: boolean
+}
+
 export interface RenderRequest extends CaptionPlacement {
   style: string
 }

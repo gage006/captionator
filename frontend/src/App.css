@@ -472,10 +472,67 @@ h2 {
   gap: 4px;
 }
 
+.transcript-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .transcript-time {
   font-size: 11px;
   color: #555;
   font-variant-numeric: tabular-nums;
+}
+
+.transcript-delete-btn {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  color: #777;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.transcript-delete-btn:hover:not(:disabled) {
+  color: #f87171;
+  background: #1a1a1a;
+}
+
+.transcript-delete-btn:disabled {
+  color: #3a3a3a;
+  cursor: not-allowed;
+}
+
+.transcript-row.deleted .transcript-textarea {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.transcript-row.deleted .transcript-time {
+  opacity: 0.45;
+}
+
+/* Inline caption editing on the preview overlay */
+.caption-edit-textarea {
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px dashed rgba(255, 255, 255, 0.6);
+  border-radius: 8px;
+  color: #fff;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: center;
+  padding: 4px 10px;
+  min-width: 16em;
+  max-width: 90%;
+  resize: none;
+  box-sizing: border-box;
+}
+
+.caption-edit-textarea:focus {
+  outline: none;
+  border-color: #fff;
 }
 
 .transcript-textarea {

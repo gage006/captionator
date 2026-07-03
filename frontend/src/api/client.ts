@@ -3,6 +3,7 @@ import type {
   StyleInfo,
   JobStatus,
   UploadResponse,
+  TranscriptEdit,
   TranscriptResponse,
   RenderRequest,
 } from '../types'
@@ -26,10 +27,10 @@ export async function getTranscript(jobId: string): Promise<TranscriptResponse> 
 
 export async function updateTranscript(
   jobId: string,
-  texts: string[],
+  edits: TranscriptEdit[],
 ): Promise<TranscriptResponse> {
   const res = await api.put<TranscriptResponse>(`/jobs/${jobId}/transcript`, {
-    segments: texts.map((text) => ({ text })),
+    segments: edits,
   })
   return res.data
 }

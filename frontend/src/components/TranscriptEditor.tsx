@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react'
 import type { TranscriptSegment } from '../types'
-import { updateTranscript } from '../api/client'
+import type { DraftSegment, SaveState } from '../hooks/useTranscriptDraft'
 
 interface Props {
-  jobId: string
   segments: TranscriptSegment[]
-  onSegmentsChange: (segments: TranscriptSegment[]) => void
-  onBusyChange?: (busy: boolean) => void
+  draft: DraftSegment[]
+  onTextChange: (index: number, text: string) => void
+  onToggleDeleted: (index: number) => void
+  onSave: () => void
+  dirty: boolean
+  saveState: SaveState
+  errorMessage: string
+  survivorCount: number
 }
 
 function formatTime(seconds: number): string {
@@ -15,72 +19,59 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-export function TranscriptEditor({ jobId, segments, onSegmentsChange, onBusyChange }: Props) {
-  const [texts, setTexts] = useState<string[]>(() => segments.map((s) => s.text))
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const [errorMessage, setErrorMessage] = useState('')
-
-  // A new job means a fresh transcript — resync the editable copy. Keyed on
-  // jobId only (not segments) so saving our own edits doesn't get clobbered
-  // by the very segments update it just triggered.
-  useEffect(() => {
-    setTexts(segments.map((s) => s.text))
-    setSaveState('idle')
-  }, [jobId]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const dirty = texts.some((t, i) => t !== segments[i]?.text)
-
-  // Let the parent (PreviewEditor) know whether it's safe to render right
-  // now — rendering while an edit is unsaved or mid-save can race the
-  // transcript.json write that render_video reads from.
-  useEffect(() => {
-    onBusyChange?.(dirty || saveState === 'saving')
-  }, [dirty, saveState, onBusyChange])
-
-  const handleChange = (index: number, value: string) => {
-    setTexts((prev) => prev.map((t, i) => (i === index ? value : t)))
-    setSaveState('idle')
-  }
-
-  const handleSave = async () => {
-    setSaveState('saving')
-    setErrorMessage('')
-    try {
-      const res = await updateTranscript(jobId, texts)
-      onSegmentsChange(res.segments)
-      setTexts(res.segments.map((s) => s.text))
-      setSaveState('saved')
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Could not save transcript.')
-      setSaveState('error')
-    }
-  }
-
+export function TranscriptEditor({
+  segments,
+  draft,
+  onTextChange,
+  onToggleDeleted,
+  onSave,
+  dirty,
+  saveState,
+  errorMessage,
+  survivorCount,
+}: Props) {
   if (segments.length === 0) {
     return <p className="transcript-empty">No transcript segments to edit.</p>
   }
 
   return (
     <div className="transcript-editor">
-      {segments.map((seg, i) => (
-        <div className="transcript-row" key={i}>
-          <span className="transcript-time">
-            {formatTime(seg.start)}–{formatTime(seg.end)}
-          </span>
-          <textarea
-            className="transcript-textarea"
-            value={texts[i] ?? ''}
-            onChange={(e) => handleChange(i, e.target.value)}
-            rows={2}
-          />
-        </div>
-      ))}
+      {segments.map((seg, i) => {
+        const row = draft[i] ?? { text: seg.text, deleted: false }
+        const lastSurvivor = !row.deleted && survivorCount === 1
+        return (
+          <div className={`transcript-row${row.deleted ? ' deleted' : ''}`} key={i}>
+            <div className="transcript-row-header">
+              <span className="transcript-time">
+                {formatTime(seg.start)}–{formatTime(seg.end)}
+              </span>
+              <button
+                type="button"
+                className="transcript-delete-btn"
+                onClick={() => onToggleDeleted(i)}
+                disabled={lastSurvivor}
+                title={lastSurvivor ? 'At least one caption must remain' : undefined}
+                aria-label={row.deleted ? 'Undo delete' : `Delete segment ${i + 1}`}
+              >
+                {row.deleted ? 'Undo' : 'Delete'}
+              </button>
+            </div>
+            <textarea
+              className="transcript-textarea"
+              value={row.text}
+              onChange={(e) => onTextChange(i, e.target.value)}
+              disabled={row.deleted}
+              rows={2}
+            />
+          </div>
+        )
+      })}
 
       <div className="transcript-save-row">
         <button
           type="button"
           className="btn-secondary"
-          onClick={handleSave}
+          onClick={onSave}
           disabled={!dirty || saveState === 'saving'}
         >
           {saveState === 'saving' ? 'Saving…' : 'Save Transcript'}

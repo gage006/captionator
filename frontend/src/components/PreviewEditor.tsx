@@ -5,6 +5,7 @@ import { StylePicker } from './StylePicker'
 import { TranscriptEditor } from './TranscriptEditor'
 import { CollapsibleSection } from './CollapsibleSection'
 import { captionTextStyle, captionBackdrop } from './captionStyle'
+import { useTranscriptDraft } from '../hooks/useTranscriptDraft'
 
 interface Props {
   jobId: string
@@ -16,6 +17,10 @@ interface Props {
 
 const DEFAULT_POS = { x: 0.5, y: 0.85 } // centered, 15% up from the bottom
 const SNAP_THRESHOLD = 0.03
+// Pointer travel below this is a click (opens inline editing), at or above it
+// a drag. The same dead zone suppresses position updates, so a click never
+// nudges the caption placement.
+const CLICK_THRESHOLD_PX = 5
 
 const clamp = (v: number, min: number, max: number) =>
   Math.min(max, Math.max(min, v))
@@ -29,6 +34,8 @@ type DragState = {
   startDist: number
   centerX: number
   centerY: number
+  /** True once the pointer has left the click dead zone. */
+  moved: boolean
 }
 
 export function PreviewEditor({
@@ -46,7 +53,9 @@ export function PreviewEditor({
   const [seekedToSample, setSeekedToSample] = useState(false)
   const [styleOpen, setStyleOpen] = useState(true)
   const [transcriptOpen, setTranscriptOpen] = useState(true)
-  const [transcriptBusy, setTranscriptBusy] = useState(false)
+
+  // One shared draft for both edit surfaces (panel list + overlay editor).
+  const transcript = useTranscriptDraft(jobId, segments, onSegmentsChange)
 
   // Intrinsic video size and the on-screen size of the video box, used to size the
   // overlay text in proportion to the eventual burned output.
@@ -55,6 +64,13 @@ export function PreviewEditor({
 
   const stageRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  // Inline overlay editing: pinned to the segment index it opened on, so
+  // playback advancing can't yank the textarea onto another segment.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editValue, setEditValue] = useState('')
+  const cancelEditRef = useRef(false)
 
   const selectedInfo = styles.find((s) => s.id === selectedStyle)
 
@@ -89,6 +105,17 @@ export function PreviewEditor({
       const rect = stage.getBoundingClientRect()
 
       if (drag.mode === 'move') {
+        // Dead zone: don't reposition until this is clearly a drag, so a
+        // click (which opens inline editing on pointerup) leaves the
+        // placement untouched.
+        if (
+          !drag.moved &&
+          Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) <
+            CLICK_THRESHOLD_PX
+        ) {
+          return
+        }
+        drag.moved = true
         const dx = (e.clientX - drag.startX) / rect.width
         const dy = (e.clientY - drag.startY) / rect.height
         let nx = clamp(drag.startPos.x + dx, 0.02, 0.98)
@@ -101,9 +128,16 @@ export function PreviewEditor({
       }
     }
     const onUp = () => {
-      if (dragRef.current) {
+      const drag = dragRef.current
+      if (drag) {
         dragRef.current = null
         setDragging(false)
+        // A press-and-release inside the dead zone is a click: open inline
+        // editing for whichever caption is on screen. (Ref indirection
+        // because this listener is registered once with empty deps.)
+        if (drag.mode === 'move' && !drag.moved) {
+          openEditorRef.current()
+        }
       }
     }
     window.addEventListener('pointermove', onMove)
@@ -115,6 +149,7 @@ export function PreviewEditor({
   }, [])
 
   const startMove = (e: React.PointerEvent) => {
+    if (editingIndex !== null) return // typing in the inline editor, not dragging
     e.preventDefault()
     dragRef.current = {
       mode: 'move',
@@ -125,6 +160,7 @@ export function PreviewEditor({
       startDist: 0,
       centerX: 0,
       centerY: 0,
+      moved: false,
     }
     setDragging(true)
   }
@@ -147,13 +183,46 @@ export function PreviewEditor({
       startDist,
       centerX,
       centerY,
+      moved: false,
     }
     setDragging(true)
   }
 
-  const activeSegment = segments.find((s) => time >= s.start && time < s.end)
+  // Preview from the draft (so unsaved edits show) and skip draft-deleted
+  // segments — a deleted segment's window shows the same fallback as the
+  // gaps between segments.
+  const activeIndex = segments.findIndex(
+    (s, i) => !transcript.draft[i]?.deleted && time >= s.start && time < s.end,
+  )
+  const firstSurvivorIndex = transcript.draft.findIndex((d) => !d.deleted)
+  // Whichever segment's text the overlay is showing right now — the one a
+  // click should edit. null when only the bare "Caption preview" fallback is up.
+  const displayIndex =
+    activeIndex >= 0 ? activeIndex : firstSurvivorIndex >= 0 ? firstSurvivorIndex : null
   const displayText =
-    activeSegment?.text || segments[0]?.text || 'Caption preview'
+    (displayIndex !== null ? transcript.draft[displayIndex]?.text : undefined) ||
+    'Caption preview'
+
+  // The click that opens the editor is detected in a window pointerup
+  // listener registered once with empty deps, so it reaches the current
+  // display index and draft through a ref.
+  const openEditorRef = useRef(() => {})
+  openEditorRef.current = () => {
+    if (displayIndex === null) return
+    videoRef.current?.pause()
+    cancelEditRef.current = false
+    setEditValue(transcript.draft[displayIndex]?.text ?? '')
+    setEditingIndex(displayIndex)
+  }
+
+  const commitEdit = () => {
+    if (cancelEditRef.current) {
+      cancelEditRef.current = false
+    } else if (editingIndex !== null) {
+      transcript.setText(editingIndex, editValue.trim())
+    }
+    setEditingIndex(null)
+  }
 
   const renderedH = stageSize?.h ?? 0
   const intrinsicH = videoDims?.h ?? 1080
@@ -165,6 +234,7 @@ export function PreviewEditor({
     <div className="preview-editor">
       <div className="preview-stage" ref={stageRef}>
         <video
+          ref={videoRef}
           className="preview-video"
           style={{ opacity: seekedToSample ? 1 : 0 }}
           src={sourceVideoUrl(jobId)}
@@ -209,11 +279,33 @@ export function PreviewEditor({
               onPointerDown={startMove}
               role="button"
               tabIndex={0}
-              aria-label="Caption position — drag to move"
+              aria-label="Caption position — drag to move, click to edit"
             >
-              <span className="caption-text" style={captionTextStyle(selectedInfo)}>
-                <span style={captionBackdrop(selectedInfo.id)}>{displayText}</span>
-              </span>
+              {editingIndex !== null ? (
+                <textarea
+                  className="caption-edit-textarea"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      commitEdit()
+                    } else if (e.key === 'Escape') {
+                      cancelEditRef.current = true
+                      setEditingIndex(null)
+                    }
+                  }}
+                  onBlur={commitEdit}
+                  autoFocus
+                  rows={2}
+                  aria-label="Edit caption text"
+                />
+              ) : (
+                <span className="caption-text" style={captionTextStyle(selectedInfo)}>
+                  <span style={captionBackdrop(selectedInfo.id)}>{displayText}</span>
+                </span>
+              )}
               <span
                 className="resize-handle"
                 onPointerDown={startResize}
@@ -225,7 +317,8 @@ export function PreviewEditor({
       </div>
 
       <p className="preview-hint">
-        Drag the caption to position it · drag the corner dot to resize
+        Drag the caption to position it · click it to edit the text · drag the
+        corner dot to resize
       </p>
 
       <div className="size-row">
@@ -259,16 +352,21 @@ export function PreviewEditor({
         onToggle={() => setTranscriptOpen((v) => !v)}
       >
         <TranscriptEditor
-          jobId={jobId}
           segments={segments}
-          onSegmentsChange={onSegmentsChange}
-          onBusyChange={setTranscriptBusy}
+          draft={transcript.draft}
+          onTextChange={transcript.setText}
+          onToggleDeleted={transcript.toggleDeleted}
+          onSave={transcript.save}
+          dirty={transcript.dirty}
+          saveState={transcript.saveState}
+          errorMessage={transcript.errorMessage}
+          survivorCount={transcript.survivorCount}
         />
       </CollapsibleSection>
 
       <button
         className="btn-primary"
-        disabled={!selectedStyle || transcriptBusy}
+        disabled={!selectedStyle || transcript.busy}
         onClick={() =>
           onSave({
             style: selectedStyle,
@@ -280,7 +378,7 @@ export function PreviewEditor({
       >
         Render with this style
       </button>
-      {transcriptBusy && (
+      {transcript.busy && (
         <p className="preview-hint">Save your transcript edits before rendering.</p>
       )}
     </div>
