@@ -123,13 +123,15 @@ Output files land in `/storage/outputs/{job_id}/`: `output.mp4`, `transcript.srt
 |------|------|
 | `App.tsx` | Top-level state machine: `idle → uploading → transcribing → editing → rendering → complete/error` |
 | `components/UploadZone.tsx` | Drag-and-drop file input |
-| `components/PreviewEditor.tsx` | Preview scrubber: plays the source video, overlays the current caption, and lets the user drag/resize (snap-to-center) the caption block + pick a style, then Save to render |
+| `components/PreviewEditor.tsx` | Preview scrubber: plays the source video, overlays the current caption (previewing unsaved draft text, skipping draft-deleted segments), and lets the user drag/resize (snap-to-center, 5px click/drag dead zone) or click the caption block to edit its text inline, pick a style, then Save to render; owns the shared transcript draft via `useTranscriptDraft` |
+| `components/TranscriptEditor.tsx` | Controlled segment list panel: per-row text editing + Delete/Undo flags (last survivor locked) and the Save Transcript button; all state comes from the shared draft hook |
 | `components/StylePicker.tsx` | Caption style selection (embedded in the editor) |
 | `components/captionStyle.ts` | Shared CSS approximation of each style's text appearance, used by both StylePicker and the preview overlay |
 | `components/ProgressTracker.tsx` | Multi-step progress visualization |
 | `components/DownloadPanel.tsx` | Download Video / Download Transcript links + a "Copy AI Prompt" button (fetches the transcript, interpolates it into an Instagram-caption prompt template, copies to clipboard) |
-| `api/client.ts` | Axios HTTP client (`uploadVideo`, `getTranscript`, `renderJob`, `sourceVideoUrl`); uses `XMLHttpRequest` for upload progress events |
+| `api/client.ts` | Axios HTTP client (`uploadVideo`, `getTranscript`, `updateTranscript`, `renderJob`, `sourceVideoUrl`); uses `XMLHttpRequest` for upload progress events |
 | `hooks/useJobPolling.ts` | Polls `GET /api/jobs/{job_id}` every 2s until a configurable terminal state (`ready` for transcribe phase, `complete` for render phase) |
+| `hooks/useTranscriptDraft.ts` | The one editable transcript draft (`{text, deleted}[]`, positional against server segments) shared by the panel and the overlay editor; owns dirty/busy state and the `PUT /transcript` save round-trip, re-baselining from each response |
 | `types/index.ts` | Shared TypeScript interfaces: `StyleInfo`, `JobStatus`, `UploadResponse`, `TranscriptSegment`, `RenderRequest`, `CaptionPlacement` |
 
 The frontend calls the API with relative `/api/*` paths; the edge nginx proxies those to `backend:8000`, so the frontend never needs to know the backend URL directly.
