@@ -1,51 +1,22 @@
 import json
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 
-def get_video_dimensions(video_path: str) -> tuple[int, int]:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "quiet",
-            "-print_format", "json",
-            "-show_streams",
-            video_path,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    data = json.loads(result.stdout)
-    for stream in data.get("streams", []):
-        if stream.get("codec_type") == "video":
-            return stream["width"], stream["height"]
-    return 1920, 1080
+@dataclass(frozen=True)
+class MediaInfo:
+    width: int
+    height: int
+    duration: float  # 0.0 when unavailable (callers skip progress reporting)
+    audio_codec: Optional[str]
 
 
-def get_audio_codec(video_path: str) -> str | None:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "quiet",
-            "-print_format", "json",
-            "-show_streams",
-            video_path,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    data = json.loads(result.stdout)
-    for stream in data.get("streams", []):
-        if stream.get("codec_type") == "audio":
-            return stream.get("codec_name")
-    return None
-
-
-def get_video_duration(video_path: str) -> float:
-    """Total duration in seconds, used to turn FFmpeg's elapsed output time into a
-    0..1 progress fraction. Returns 0.0 when unavailable (callers then skip
-    progress reporting rather than divide by zero)."""
+def probe_media(video_path: str) -> MediaInfo:
+    """One ffprobe pass for everything the render pipeline needs — dimensions
+    (ASS PlayRes), duration (progress fraction denominator), and audio codec
+    (stream-copy vs. transcode) — instead of a probe per question."""
     result = subprocess.run(
         [
             "ffprobe", "-v", "quiet",
@@ -58,14 +29,32 @@ def get_video_duration(video_path: str) -> float:
         check=True,
     )
     data = json.loads(result.stdout)
-    duration = data.get("format", {}).get("duration")
-    if duration:
-        return float(duration)
-    # Fall back to the longest stream duration if the container omits format.duration.
+
+    width, height = 1920, 1080
+    audio_codec = None
+    stream_duration = None
+    found_video = False
     for stream in data.get("streams", []):
-        if stream.get("duration"):
-            return float(stream["duration"])
-    return 0.0
+        if stream.get("codec_type") == "video" and not found_video:
+            found_video = True
+            width, height = stream["width"], stream["height"]
+        elif stream.get("codec_type") == "audio" and audio_codec is None:
+            audio_codec = stream.get("codec_name")
+        if stream_duration is None and stream.get("duration"):
+            stream_duration = float(stream["duration"])
+
+    # Prefer the container duration; fall back to a stream's if the container
+    # omits format.duration.
+    duration = float(data.get("format", {}).get("duration") or stream_duration or 0.0)
+
+    return MediaInfo(width=width, height=height, duration=duration, audio_codec=audio_codec)
+
+
+def get_video_duration(video_path: str) -> float:
+    """Total duration in seconds, used to turn FFmpeg's elapsed output time into a
+    0..1 progress fraction. Returns 0.0 when unavailable (callers then skip
+    progress reporting rather than divide by zero)."""
+    return probe_media(video_path).duration
 
 
 def burn_subtitles(
@@ -73,12 +62,16 @@ def burn_subtitles(
     ass_path: str,
     output_path: str,
     progress_callback: Optional[Callable[[float], None]] = None,
+    media_info: Optional[MediaInfo] = None,
 ) -> None:
+    # Callers that already probed the input (render_video needs the dimensions
+    # for the ASS header anyway) pass their MediaInfo to avoid a second probe.
+    info = media_info or probe_media(input_path)
     # ass= filter requires the path to use forward slashes and colons escaped on some platforms
     safe_ass_path = ass_path.replace("\\", "/").replace(":", "\\:")
     # Burning subtitles forces a video re-encode, but the audio is untouched — so
     # stream-copy it when it's already AAC (mp4-native) and only transcode otherwise.
-    if get_audio_codec(input_path) == "aac":
+    if info.audio_codec == "aac":
         audio_args = ["-c:a", "copy"]
     else:
         audio_args = ["-c:a", "aac", "-b:a", "128k"]
@@ -95,7 +88,7 @@ def burn_subtitles(
         output_path,
     ]
 
-    duration = get_video_duration(input_path) if progress_callback else 0.0
+    duration = info.duration if progress_callback else 0.0
 
     # Stream stdout for progress while sending stderr (the encoder log) to a temp
     # file. Draining only one pipe inline avoids the classic deadlock where a

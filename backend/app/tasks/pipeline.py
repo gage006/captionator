@@ -11,7 +11,7 @@ from ..models import Job
 from ..config import settings
 from .transcribe import transcribe
 from .ass_generator import build as build_ass
-from .ffmpeg_burn import get_video_dimensions, get_video_duration, burn_subtitles
+from .ffmpeg_burn import probe_media, get_video_duration, burn_subtitles
 from .silence import detect_silences, compute_kept_ranges, trim_silences, remap_segments
 
 logger = logging.getLogger(__name__)
@@ -210,12 +210,12 @@ def render_video(job_id: str) -> None:
 
         _update_job(db, job_id, status="rendering", step="styling", progress=55)
 
-        width, height = get_video_dimensions(video_path)
+        media_info = probe_media(video_path)
         ass_content = build_ass(
             segments,
             job.style,
-            width,
-            height,
+            media_info.width,
+            media_info.height,
             position=(job.position_x, job.position_y),
             scale=job.scale,
         )
@@ -239,7 +239,11 @@ def render_video(job_id: str) -> None:
 
         output_video = str(output_dir / "output.mp4")
         burn_subtitles(
-            video_path, str(ass_path), output_video, progress_callback=on_burn_progress
+            video_path,
+            str(ass_path),
+            output_video,
+            progress_callback=on_burn_progress,
+            media_info=media_info,
         )
 
         _update_job(
@@ -265,11 +269,20 @@ def render_video(job_id: str) -> None:
 
 @celery.task(name="cleanup_job")
 def cleanup_job(job_id: str) -> None:
-    for base in (settings.upload_path, settings.output_path):
-        shutil.rmtree(base / job_id, ignore_errors=True)
-    logger.info("cleaned up job files: job=%s", job_id)
     db = SessionLocal()
     try:
+        # A render may have started after this cleanup was scheduled (re-rendering
+        # a complete job is allowed, and the sweep can race a just-clicked render
+        # on an old "ready" job). Deleting now would pull the source and output
+        # files out from under the burn — skip, and let the cleanup that render's
+        # own completion schedules (or a later sweep tick) reap the files.
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job and job.status == "rendering":
+            logger.info("cleanup skipped, render in flight: job=%s", job_id)
+            return
+        for base in (settings.upload_path, settings.output_path):
+            shutil.rmtree(base / job_id, ignore_errors=True)
+        logger.info("cleaned up job files: job=%s", job_id)
         _update_job(db, job_id, status="expired", step="deleted", progress=100)
     finally:
         db.close()
