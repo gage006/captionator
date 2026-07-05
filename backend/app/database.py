@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 from .config import settings
@@ -15,6 +15,23 @@ engine = create_engine(
     # statements, so 30s is ample headroom without risking a real hang.
     connect_args={"check_same_thread": False, "timeout": 30},
 )
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+    # WAL: four processes share this file, and the worker commits a progress
+    # update per percent while the API serves status polls — in the default
+    # DELETE journal mode every write briefly blocks all readers (and vice
+    # versa), which is where "database is locked" stalls come from under load.
+    # WAL lets readers run concurrently with a writer. synchronous=NORMAL is
+    # the standard WAL pairing: fsync per checkpoint instead of per commit,
+    # so an OS crash can lose the last few progress ticks but cannot corrupt
+    # the DB. journal_mode is persistent in the file, but setting it on every
+    # connect keeps a fresh volume covered no matter which process opens it first.
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
