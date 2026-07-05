@@ -11,7 +11,7 @@ from ..models import Job
 from ..config import settings
 from .transcribe import transcribe
 from .ass_generator import build as build_ass
-from .ffmpeg_burn import probe_media, get_video_duration, burn_subtitles
+from .ffmpeg_burn import probe_media, get_video_duration, burn_subtitles_with_fallback
 from .silence import detect_silences, compute_kept_ranges, trim_silences, remap_segments
 
 logger = logging.getLogger(__name__)
@@ -238,7 +238,7 @@ def render_video(job_id: str) -> None:
                 _update_job(db, job_id, progress=pct)
 
         output_video = str(output_dir / "output.mp4")
-        burn_subtitles(
+        encoder_used = burn_subtitles_with_fallback(
             video_path,
             str(ass_path),
             output_video,
@@ -255,7 +255,10 @@ def render_video(job_id: str) -> None:
             completed_at=datetime.now(timezone.utc),
         )
 
-        logger.info("render complete: job=%s took=%.1fs", job_id, time.monotonic() - started)
+        logger.info(
+            "render complete: job=%s encoder=%s took=%.1fs",
+            job_id, encoder_used, time.monotonic() - started,
+        )
 
         cleanup_job.apply_async(args=[job_id], countdown=settings.cleanup_delay_seconds)
 
