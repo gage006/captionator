@@ -17,6 +17,7 @@ from ..schemas import (
 from ..styles.definitions import STYLES, base_font_size
 from ..tasks.celery_app import celery
 from ..tasks.pipeline import write_transcript_files
+from .common import load_job
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,9 +25,8 @@ logger = logging.getLogger(__name__)
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
 def get_job(job_id: str, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # allow_expired: the status endpoint is how clients learn a job expired.
+    job = load_job(job_id, db, allow_expired=True)
     return JobStatus(
         job_id=job.id,
         status=job.status,
@@ -46,12 +46,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
 
 @router.get("/jobs/{job_id}/transcript", response_model=TranscriptResponse)
 def get_transcript(job_id: str, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.status == "expired":
-        # Cleanup deleted this job's files; "not ready yet" would be misleading.
-        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
+    load_job(job_id, db)
 
     transcript_path = settings.output_path / job_id / "transcript.json"
     if not transcript_path.exists():
@@ -62,9 +57,9 @@ def get_transcript(job_id: str, db: Session = Depends(get_db)):
 
 @router.put("/jobs/{job_id}/transcript", response_model=TranscriptResponse)
 def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # allow_expired: the ready-state guard below already answers expired jobs
+    # with the editing-specific 409.
+    job = load_job(job_id, db, allow_expired=True)
     if job.status != "ready":
         raise HTTPException(
             status_code=409,
@@ -146,13 +141,9 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
 
 @router.post("/jobs/{job_id}/render", response_model=JobStatus, status_code=202)
 def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = load_job(job_id, db)
     if req.style not in STYLES:
         raise HTTPException(status_code=400, detail=f"Unknown style: {req.style}")
-    if job.status == "expired":
-        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
 
     transcript_path = settings.output_path / job_id / "transcript.json"
     if not transcript_path.exists():

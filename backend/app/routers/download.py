@@ -2,19 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import Job
 from ..config import settings
+from .common import load_job
 
 router = APIRouter()
 
 
 @router.api_route("/download/{job_id}/{file_type}", methods=["GET", "HEAD"])
 def download_file(job_id: str, file_type: str, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.status == "expired":
-        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
+    job = load_job(job_id, db)
     if job.status != "complete":
         raise HTTPException(status_code=400, detail="Job not complete yet")
 

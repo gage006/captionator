@@ -17,7 +17,9 @@ except ImportError:  # pragma: no cover
 BASE_URL = "http://localhost"
 
 
-def _post_upload_tolerating_cap(file_bytes: bytes, filename: str) -> httpx.Response:
+def _post_upload_tolerating_cap(
+    file_bytes: bytes, filename: str, language: str = "auto"
+) -> httpx.Response:
     """Direct POST (no conftest retry helper) that only retries a transient 429.
 
     The active-job cap check runs before content validation, so on a busy
@@ -30,7 +32,7 @@ def _post_upload_tolerating_cap(file_bytes: bytes, filename: str) -> httpx.Respo
         r = httpx.post(
             f"{BASE_URL}/api/upload",
             files={"file": (filename, file_bytes, "video/mp4")},
-            data={"language": "auto"},
+            data={"language": language},
             timeout=30,
         )
         if r.status_code == 429 and time.time() < deadline:
@@ -63,19 +65,9 @@ def test_non_video_upload_is_rejected_with_415():
 def test_unknown_language_code_is_rejected_with_400(sample_video):
     """An invalid language must fail at upload with a clear 400 — not minutes
     later as a cryptic Whisper ValueError on a job the user already waited on."""
-    deadline = time.time() + 60
-    while True:
-        with open(sample_video, "rb") as f:
-            r = httpx.post(
-                f"{BASE_URL}/api/upload",
-                files={"file": ("sample.mp4", f, "video/mp4")},
-                data={"language": "klingon"},
-                timeout=30,
-            )
-        if r.status_code == 429 and time.time() < deadline:
-            time.sleep(2)
-            continue
-        break
+    r = _post_upload_tolerating_cap(
+        sample_video.read_bytes(), "sample.mp4", language="klingon"
+    )
     assert r.status_code == 400
     assert "language" in r.json()["detail"].lower()
 

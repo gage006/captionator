@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import Job
+from .common import load_job
 
 router = APIRouter()
 
@@ -22,9 +22,8 @@ def preview_source(job_id: str, request: Request, db: Session = Depends(get_db))
     version of Starlette's FileResponse does not emit 206 on its own, so we handle
     Range here.) Distinct from download.py, which serves only finished outputs.
     """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # Expired jobs 410 like the other file-serving routes (their source is deleted).
+    job = load_job(job_id, db)
 
     path = Path(job.filename)
     if not path.exists():
