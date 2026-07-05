@@ -43,10 +43,20 @@ def preview_source(job_id: str, request: Request, db: Session = Depends(get_db))
 
     range_header = request.headers.get("range")
     match = _RANGE_RE.fullmatch(range_header.strip()) if range_header else None
+    # "bytes=-" specifies nothing; per RFC 9110 an unsatisfiable/invalid Range
+    # is ignored and the full file served.
+    if match and not (match.group(1) or match.group(2)):
+        match = None
 
     if match:
-        start = int(match.group(1)) if match.group(1) else 0
-        end = int(match.group(2)) if match.group(2) else file_size - 1
+        if match.group(1):
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else file_size - 1
+        else:
+            # Suffix form "bytes=-N": the final N bytes (e.g. a player fetching
+            # a trailing moov atom), not bytes 0..N.
+            start = max(0, file_size - int(match.group(2)))
+            end = file_size - 1
         end = min(end, file_size - 1)
         if start > end or start >= file_size:
             return Response(

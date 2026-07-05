@@ -28,11 +28,22 @@ def _format_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _escape_text(text: str) -> str:
+    """Neutralize characters that are live syntax inside an ASS Dialogue line.
+
+    `{`/`}` open an override-tag block (a user-typed `{\\an1}` would really
+    re-position the caption — libass renders `\\{`/`\\}` as literal braces),
+    and a raw newline terminates the Dialogue line, silently dropping the rest
+    of the text. Segment text is user-editable, so both are reachable inputs.
+    """
+    return " ".join(text.split()).replace("{", "\\{").replace("}", "\\}")
+
+
 def _build_karaoke_text(words: list) -> str:
     parts = []
     for word in words:
         duration_cs = max(1, int(round((word["end"] - word["start"]) * 100)))
-        text = word["word"].strip()
+        text = _escape_text(word["word"])
         parts.append(f"{{\\k{duration_cs}}}{text} ")
     return "".join(parts).rstrip()
 
@@ -49,7 +60,7 @@ def _iter_word_groups(segments: list, wpg: int):
     """
     for seg in segments:
         words = [
-            {"word": w["word"].strip(), "start": w["start"], "end": w["end"]}
+            {"word": _escape_text(w["word"]), "start": w["start"], "end": w["end"]}
             for w in seg.get("words", [])
             if w["word"].strip()
         ]
@@ -212,9 +223,9 @@ def build(
             if style_id == "karaoke" and seg.get("words"):
                 text = _build_karaoke_text(seg["words"])
             elif style_id == "cinematic":
-                text = "{\\fad(300,300)}" + seg["text"].strip()
+                text = "{\\fad(300,300)}" + _escape_text(seg["text"])
             else:
-                text = seg["text"].strip()
+                text = _escape_text(seg["text"])
 
             event_lines.append(
                 f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{pos_prefix}{text}"

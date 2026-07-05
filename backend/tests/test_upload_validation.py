@@ -60,6 +60,26 @@ def test_non_video_upload_is_rejected_with_415():
     assert "video" in r.json()["detail"].lower()
 
 
+def test_unknown_language_code_is_rejected_with_400(sample_video):
+    """An invalid language must fail at upload with a clear 400 — not minutes
+    later as a cryptic Whisper ValueError on a job the user already waited on."""
+    deadline = time.time() + 60
+    while True:
+        with open(sample_video, "rb") as f:
+            r = httpx.post(
+                f"{BASE_URL}/api/upload",
+                files={"file": ("sample.mp4", f, "video/mp4")},
+                data={"language": "klingon"},
+                timeout=30,
+            )
+        if r.status_code == 429 and time.time() < deadline:
+            time.sleep(2)
+            continue
+        break
+    assert r.status_code == 400
+    assert "language" in r.json()["detail"].lower()
+
+
 def test_video_without_audio_track_is_rejected_with_415(tmp_path):
     # A real, decodable mp4 — but with no audio stream, so transcription would
     # be impossible. Generated on the fly (trivial and deterministic).

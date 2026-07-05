@@ -153,6 +153,84 @@ def test_deleting_a_segment_drops_it_and_rejects_stale_resubmission(
     assert r.status_code == 400
 
 
+def test_blanking_a_segment_text_is_rejected(speech_video: Path):
+    """Whitespace-only text must 400 rather than creating an invisible caption:
+    an empty segment would survive the "≥1 must remain" deletion guard while
+    contributing nothing to the burn. Deletion has an explicit flag instead."""
+    job_id = upload_sample(speech_video)
+    wait_for_status(job_id, "ready")
+
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    segments = r.json()["segments"]
+    assert segments, "expected at least one transcribed segment"
+
+    edits = [{"text": s["text"]} for s in segments]
+    edits[0]["text"] = "   \n  "
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript",
+        json={"segments": edits},
+        timeout=15,
+    )
+    assert r.status_code == 400
+    assert "empty" in r.json()["detail"].lower()
+
+    # The rejected edit must not have touched the stored transcript.
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    assert r.json()["segments"] == segments
+
+
+def test_braces_and_newlines_in_edited_text_survive_render_intact(speech_video: Path):
+    """Edited text containing `{`, `}` or newlines must not corrupt the ASS file.
+
+    Inside an ASS Dialogue line, `{...}` is a live override-tag block (a typed
+    `{\\an1}` would really re-position the caption) and a raw newline
+    terminates the line, silently dropping the rest of the text from the burn.
+    Both are typable in the editor textareas today.
+    """
+    job_id = upload_sample(speech_video)
+    wait_for_status(job_id, "ready")
+
+    r = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=15)
+    segments = r.json()["segments"]
+    assert segments, "expected at least one transcribed segment"
+
+    edits = [{"text": s["text"]} for s in segments]
+    edits[0]["text"] = "hello {\\an1}brace\nsecond line"
+
+    r = httpx.put(
+        f"{BASE_URL}/api/jobs/{job_id}/transcript",
+        json={"segments": edits},
+        timeout=15,
+    )
+    assert r.status_code == 200
+
+    r = render_job(job_id, style="classic")
+    assert r.status_code == 202
+    wait_for_status(job_id, "complete")
+
+    ass_text = httpx.get(f"{BASE_URL}/api/download/{job_id}/ass", timeout=15).text
+    events = ass_text.split("[Events]", 1)[1]
+
+    # A raw newline in the text would split its Dialogue line, leaving the
+    # remainder as a stray non-Dialogue line that libass silently drops.
+    stray = [
+        line
+        for line in events.splitlines()
+        if line.strip() and not line.startswith(("Format:", "Dialogue:"))
+    ]
+    assert stray == [], f"caption text leaked onto its own line(s): {stray}"
+
+    dialogue_lines = [l for l in events.splitlines() if l.startswith("Dialogue:")]
+    # classic emits one Dialogue line per segment.
+    assert len(dialogue_lines) == len(segments)
+    joined = "\n".join(dialogue_lines)
+    # The typed brace tag must be neutralized (escaped), not live ASS syntax.
+    assert "{\\an1}" not in joined
+    # And none of the words the user typed may be lost.
+    for word in ("hello", "brace", "second", "line"):
+        assert word in joined
+
+
 def test_deleted_segment_is_absent_from_rendered_captions(speech_video: Path):
     job_id = upload_sample(speech_video)
     wait_for_status(job_id, "ready")

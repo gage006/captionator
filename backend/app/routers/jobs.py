@@ -49,6 +49,9 @@ def get_transcript(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "expired":
+        # Cleanup deleted this job's files; "not ready yet" would be misleading.
+        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
 
     transcript_path = settings.output_path / job_id / "transcript.json"
     if not transcript_path.exists():
@@ -86,10 +89,21 @@ def update_transcript(job_id: str, req: TranscriptEditRequest, db: Session = Dep
         if edit.delete:
             deleted += 1
             continue
-        new_text = edit.text.strip()
+        # Collapse all interior whitespace (including newlines) to single
+        # spaces: a blank line inside a cue would terminate the block early in
+        # the SRT file, and the even word-timing split below assumes
+        # space-separated words anyway.
+        new_text = " ".join(edit.text.split())
         if new_text == stored_seg["text"]:
             updated.append(stored_seg)
             continue
+        if not new_text:
+            # An empty segment would survive the "≥1 must remain" deletion
+            # guard below while rendering as an invisible caption.
+            raise HTTPException(
+                status_code=400,
+                detail="Segment text cannot be empty — delete the segment instead.",
+            )
         # Word-level timing can't be reliably re-derived from a free-text edit,
         # so split the edited text into evenly-spaced word slots across the
         # segment's original [start, end] span. Real per-word entries (rather
@@ -137,19 +151,25 @@ def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
     if req.style not in STYLES:
         raise HTTPException(status_code=400, detail=f"Unknown style: {req.style}")
+    if job.status == "expired":
+        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
 
     transcript_path = settings.output_path / job_id / "transcript.json"
     if not transcript_path.exists():
         raise HTTPException(status_code=409, detail="Transcript not ready yet")
 
-    # Atomic compare-and-swap: only start a render if one isn't already in
-    # flight. A plain read-then-write (check job.status, then set it) has a
-    # race window where two near-simultaneous requests (e.g. a double-click)
-    # can both pass the check and both enqueue render_video for the same
-    # job_id, corrupting the shared captions.ass/output.mp4 files.
+    # Atomic compare-and-swap: only start a render from a state that has a
+    # finished, final transcript. A plain read-then-write (check job.status,
+    # then set it) has a race window where two near-simultaneous requests
+    # (e.g. a double-click) can both pass the check and both enqueue
+    # render_video for the same job_id, corrupting the shared
+    # captions.ass/output.mp4 files. The allowed-set (rather than just
+    # != "rendering") also closes the phase-1 window: transcript.json is
+    # persisted before silence removal runs, so a still-"transcribing" job
+    # would otherwise burn the un-trimmed video with un-remapped timings.
     result = db.execute(
         update(Job)
-        .where(Job.id == job_id, Job.status != "rendering")
+        .where(Job.id == job_id, Job.status.in_(("ready", "complete", "failed")))
         .values(
             style=req.style,
             position_x=req.position_x,
@@ -165,7 +185,13 @@ def render_job(job_id: str, req: RenderRequest, db: Session = Depends(get_db)):
     )
     db.commit()
     if result.rowcount == 0:
-        raise HTTPException(status_code=409, detail="Job is already rendering")
+        db.refresh(job)
+        detail = (
+            "Job is already rendering"
+            if job.status == "rendering"
+            else f"Job cannot start a render in its current state ({job.status})"
+        )
+        raise HTTPException(status_code=409, detail=detail)
 
     db.refresh(job)
     celery.send_task("render_video", args=[job_id])

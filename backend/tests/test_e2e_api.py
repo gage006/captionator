@@ -17,9 +17,19 @@ import httpx
 import pytest
 
 try:  # works whether pytest imports this as a package module or a top-level one
-    from .conftest import upload_sample, wait_for_status, render_job
+    from .conftest import (
+        upload_sample,
+        upload_sample_with_silence_removal,
+        wait_for_status,
+        render_job,
+    )
 except ImportError:  # pragma: no cover
-    from conftest import upload_sample, wait_for_status, render_job
+    from conftest import (
+        upload_sample,
+        upload_sample_with_silence_removal,
+        wait_for_status,
+        render_job,
+    )
 
 BASE_URL = "http://localhost"
 PIPELINE_TIMEOUT = 600
@@ -146,6 +156,52 @@ class TestRender:
         assert r2.status_code == 409
 
         wait_for_status(job_id, "complete")
+
+    def test_render_is_rejected_while_transcription_still_running(self, speech_video: Path):
+        """transcript.json is persisted mid-phase-1 (before silence removal
+        runs), so a render request in that window used to pass both the
+        transcript-exists check and the status guard — and would burn the
+        un-trimmed video with the un-remapped transcript. It must 409 until
+        the job is actually "ready"."""
+        job_id = upload_sample_with_silence_removal(speech_video)
+
+        entered_window = False
+        accepted_as_ready = False
+        deadline = time.time() + PIPELINE_TIMEOUT
+        while time.time() < deadline:
+            status = httpx.get(f"{BASE_URL}/api/jobs/{job_id}", timeout=10).json()
+            if status["status"] != "transcribing":
+                break
+            t = httpx.get(f"{BASE_URL}/api/jobs/{job_id}/transcript", timeout=10)
+            if t.status_code == 200:
+                entered_window = True
+                r = render_job(job_id, style="classic")
+                if r.status_code == 202:
+                    # The job may have legitimately flipped to "ready" between
+                    # our status check and the render POST. Phase 1's final
+                    # update is the only writer of silence_removed_seconds (we
+                    # uploaded with remove_silences=true), so a legitimate
+                    # acceptance carries a value — a render accepted while
+                    # transcription was still running snapshots it as null.
+                    assert r.json()["silence_removed_seconds"] is not None, (
+                        "render accepted while the job was still transcribing"
+                    )
+                    accepted_as_ready = True
+                    break
+                assert r.status_code == 409, (
+                    f"expected 409 during transcription, got {r.status_code}"
+                )
+            time.sleep(0.05)
+
+        if accepted_as_ready:
+            wait_for_status(job_id, "complete")
+        else:
+            # The rejected render attempts must not have disturbed phase 1.
+            wait_for_status(job_id, "ready")
+        if not entered_window:
+            pytest.skip(
+                "transcript-exists-while-transcribing window not observed this run"
+            )
 
 
 # ---------------------------------------------------------------------------

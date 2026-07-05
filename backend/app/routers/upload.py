@@ -17,6 +17,15 @@ from ..tasks.celery_app import celery
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# The language codes Whisper accepts, for rejecting typos at upload instead of
+# failing the job minutes later with a raw ValueError from inside transcription.
+# Private constant, so degrade to no validation (the old behavior) if a
+# faster-whisper upgrade ever moves it.
+try:
+    from faster_whisper.tokenizer import _LANGUAGE_CODES as _WHISPER_LANGUAGES
+except ImportError:  # pragma: no cover
+    _WHISPER_LANGUAGES = None
+
 
 def _probe_has_video_and_audio(path: str) -> bool:
     """True iff ffprobe can decode the file and finds at least one video and
@@ -53,6 +62,17 @@ async def upload_video(
     # stores the video and kicks off transcription.
     # Full 128-bit hex id: unguessable (the download/preview/transcript routes are
     # unauthenticated, so a short id would be enumerable) and collision-free.
+    language = language.strip().lower()
+    if (
+        language != "auto"
+        and _WHISPER_LANGUAGES is not None
+        and language not in _WHISPER_LANGUAGES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown language code: {language!r}. Use 'auto' or a Whisper language code like 'en'.",
+        )
+
     active = (
         db.query(Job)
         .filter(Job.status.in_(("transcribing", "rendering")))
@@ -77,50 +97,60 @@ async def upload_video(
         safe_filename = "video.mp4"
     dest = dest_dir / safe_filename
 
-    size_bytes = 0
-    async with aiofiles.open(dest, "wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size_bytes += len(chunk)
-            if size_bytes > settings.max_upload_bytes:
-                shutil.rmtree(dest_dir, ignore_errors=True)
-                logger.warning(
-                    "upload rejected (too large mid-stream): file=%s limit=%dMB",
-                    safe_filename, settings.max_upload_mb,
-                )
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Limit is {settings.max_upload_mb} MB.",
-                )
-            await out.write(chunk)
+    # Until the Job row is committed, nothing in the system knows this directory
+    # exists — the sweep reaps from the DB, so a failure anywhere in here (disk
+    # full mid-write, DB error, rejection below) must delete the directory
+    # inline or it leaks forever. After the commit the row owns the files and
+    # the sweep is the backstop.
+    committed = False
+    try:
+        size_bytes = 0
+        async with aiofiles.open(dest, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size_bytes += len(chunk)
+                if size_bytes > settings.max_upload_bytes:
+                    logger.warning(
+                        "upload rejected (too large mid-stream): file=%s limit=%dMB",
+                        safe_filename, settings.max_upload_mb,
+                    )
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Limit is {settings.max_upload_mb} MB.",
+                    )
+                await out.write(chunk)
 
-    # Validate the bytes actually are a playable video before creating a job:
-    # this turns what would be a cryptic mid-pipeline Whisper/FFmpeg failure
-    # into an immediate, clear 415. Run in a thread so the (brief) subprocess
-    # call doesn't block the event loop.
-    if not await asyncio.to_thread(_probe_has_video_and_audio, str(dest)):
-        shutil.rmtree(dest_dir, ignore_errors=True)
-        logger.warning("upload rejected (not a playable video): file=%s", safe_filename)
-        raise HTTPException(
-            status_code=415,
-            detail="Upload must be a video file with an audio track.",
+        # Validate the bytes actually are a playable video before creating a job:
+        # this turns what would be a cryptic mid-pipeline Whisper/FFmpeg failure
+        # into an immediate, clear 415. Run in a thread so the (brief) subprocess
+        # call doesn't block the event loop.
+        if not await asyncio.to_thread(_probe_has_video_and_audio, str(dest)):
+            logger.warning("upload rejected (not a playable video): file=%s", safe_filename)
+            raise HTTPException(
+                status_code=415,
+                detail="Upload must be a video file with an audio track.",
+            )
+
+        job = Job(
+            id=job_id,
+            filename=str(dest),
+            language=language,
+            remove_silences=remove_silences,
+            status="transcribing",
+            step="transcribing",
+            progress=0,
         )
+        db.add(job)
+        db.commit()
+        committed = True
 
-    job = Job(
-        id=job_id,
-        filename=str(dest),
-        language=language,
-        remove_silences=remove_silences,
-        status="transcribing",
-        step="transcribing",
-        progress=0,
-    )
-    db.add(job)
-    db.commit()
-
-    celery.send_task("transcribe_video", args=[job_id])
+        celery.send_task("transcribe_video", args=[job_id])
+    except Exception:
+        if not committed:
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        raise
 
     logger.info(
         "upload accepted: job=%s file=%s size=%dB language=%s remove_silences=%s",

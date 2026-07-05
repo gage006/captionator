@@ -13,6 +13,8 @@ def download_file(job_id: str, file_type: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "expired":
+        raise HTTPException(status_code=410, detail="This job has expired and its files were deleted.")
     if job.status != "complete":
         raise HTTPException(status_code=400, detail="Job not complete yet")
 
