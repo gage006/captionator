@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8_float32"
     # CPU threads for transcription. 0 lets CTranslate2 auto-detect physical cores.
     whisper_cpu_threads: int = 0
+    # FFmpeg video encoder for the caption burn. "auto" (default) probes for a
+    # working hardware encoder at the worker's first render — h264_nvenc, then
+    # h264_qsv, then h264_vaapi — and falls back to libx264. Force one of those
+    # names to skip detection (a forced encoder that fails its probe degrades
+    # back to auto with a warning). Hardware encoders additionally need the GPU
+    # device passed into the worker container: see docker-compose.hwaccel.yml.
+    video_encoder: str = "auto"
     cleanup_delay_seconds: int = 600
     # Extra browser origins allowed via CORS, comma-separated. Empty by default:
     # the app is same-origin behind nginx, so no CORS headers are needed. Set this

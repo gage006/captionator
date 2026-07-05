@@ -1,0 +1,21 @@
+# Opt-in override granting the worker access to the host GPU's render node so
+# the h264_qsv / h264_vaapi probes can succeed (Intel/AMD). This cannot live in
+# docker-compose.yml: a devices: entry for a node the host doesn't have fails
+# container creation outright on GPU-less hosts (e.g. Docker Desktop on WSL2).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.hwaccel.yml up -d
+# or persistently, in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.hwaccel.yml
+#
+# Smoke check after a render: `docker compose logs worker | grep "video encoder"`
+# should name h264_qsv (Intel) — and the render_video completion line reports
+# the encoder each job actually used.
+#
+# NVIDIA hosts: don't use this file; instead install the NVIDIA container
+# toolkit and add a worker override with `gpus: all` — h264_nvenc probes first.
+# Only the worker encodes; backend/beat never need the device.
+services:
+  worker:
+    devices:
+      - /dev/dri:/dev/dri

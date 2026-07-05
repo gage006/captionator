@@ -1,8 +1,13 @@
 import json
+import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from .encoder import EncoderChoice, SOFTWARE_FALLBACK, detect_encoder
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,36 +62,49 @@ def get_video_duration(video_path: str) -> float:
     return probe_media(video_path).duration
 
 
+def _build_cmd(
+    input_path: str,
+    ass_path: str,
+    output_path: str,
+    audio_codec: Optional[str],
+    encoder: EncoderChoice,
+) -> list[str]:
+    # ass= filter requires the path to use forward slashes and colons escaped
+    # on some platforms
+    safe_ass_path = ass_path.replace("\\", "/").replace(":", "\\:")
+    # Burning subtitles forces a video re-encode, but the audio is untouched —
+    # so stream-copy it when it's already AAC (mp4-native) and only transcode
+    # otherwise.
+    if audio_codec == "aac":
+        audio_args = ["-c:a", "copy"]
+    else:
+        audio_args = ["-c:a", "aac", "-b:a", "128k"]
+    return [
+        "ffmpeg", "-y",
+        *encoder.pre_input_args,
+        "-i", input_path,
+        "-vf", f"ass={safe_ass_path}" + encoder.filter_suffix,
+        *encoder.output_args,
+        *audio_args,
+        # Machine-readable progress to stdout; suppress the human stats line.
+        "-progress", "pipe:1", "-nostats",
+        output_path,
+    ]
+
+
 def burn_subtitles(
     input_path: str,
     ass_path: str,
     output_path: str,
     progress_callback: Optional[Callable[[float], None]] = None,
     media_info: Optional[MediaInfo] = None,
+    encoder: Optional[EncoderChoice] = None,
 ) -> None:
     # Callers that already probed the input (render_video needs the dimensions
     # for the ASS header anyway) pass their MediaInfo to avoid a second probe.
     info = media_info or probe_media(input_path)
-    # ass= filter requires the path to use forward slashes and colons escaped on some platforms
-    safe_ass_path = ass_path.replace("\\", "/").replace(":", "\\:")
-    # Burning subtitles forces a video re-encode, but the audio is untouched — so
-    # stream-copy it when it's already AAC (mp4-native) and only transcode otherwise.
-    if info.audio_codec == "aac":
-        audio_args = ["-c:a", "copy"]
-    else:
-        audio_args = ["-c:a", "aac", "-b:a", "128k"]
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-vf", f"ass={safe_ass_path}",
-        "-c:v", "libx264",
-        "-crf", "23",
-        "-preset", "fast",
-        *audio_args,
-        # Machine-readable progress to stdout; suppress the human stats line.
-        "-progress", "pipe:1", "-nostats",
-        output_path,
-    ]
+    enc = encoder or detect_encoder()
+    cmd = _build_cmd(input_path, ass_path, output_path, info.audio_codec, enc)
 
     duration = info.duration if progress_callback else 0.0
 
@@ -115,3 +133,40 @@ def burn_subtitles(
             err_file.seek(0)
             tail = err_file.read()[-2000:]
             raise RuntimeError(f"FFmpeg error:\n{tail}")
+
+
+def burn_subtitles_with_fallback(
+    input_path: str,
+    ass_path: str,
+    output_path: str,
+    progress_callback: Optional[Callable[[float], None]] = None,
+    media_info: Optional[MediaInfo] = None,
+) -> str:
+    """Burn with the detected encoder; if a HARDWARE encoder fails on this
+    file (probe passed, but e.g. an odd resolution trips the driver), retry
+    once with libx264 so no user job dies over an encoder quirk. One failure
+    does NOT demote the cached choice — the next job tries hardware again.
+    Returns the name of the encoder that produced the output."""
+    enc = detect_encoder()
+    try:
+        burn_subtitles(
+            input_path, ass_path, output_path,
+            progress_callback=progress_callback,
+            media_info=media_info,
+            encoder=enc,
+        )
+        return enc.name
+    except RuntimeError as exc:
+        if enc.name == SOFTWARE_FALLBACK.name:
+            raise
+        logger.warning(
+            "hardware encoder %s failed (%s); retrying with %s",
+            enc.name, exc, SOFTWARE_FALLBACK.name,
+        )
+        burn_subtitles(
+            input_path, ass_path, output_path,
+            progress_callback=progress_callback,
+            media_info=media_info,
+            encoder=SOFTWARE_FALLBACK,
+        )
+        return SOFTWARE_FALLBACK.name
