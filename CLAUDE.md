@@ -46,7 +46,7 @@ pytest backend/tests/ -v                       # API integration tests (httpx)
 cd e2e && npm install && npx playwright test   # browser E2E (Playwright)
 ```
 
-Both skip automatically if the fixture `backend/tests/fixtures/sample.mp4` is missing (`bash scripts/create_test_fixture.sh` generates it). There are no unit tests; coverage is end-to-end against the running services.
+Both skip automatically if the fixture `backend/tests/fixtures/sample.mp4` is missing (`bash scripts/create_test_fixture.sh` generates it). Coverage is mostly end-to-end against the running services; the exception is `backend/tests/test_encoder_selection.py` — pure unit tests for encoder selection that run without the stack.
 
 ## Architecture
 
@@ -68,7 +68,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | Path | Role |
 |------|------|
 | `main.py` | FastAPI app, router registration, lifespan handler; CORS is opt-in (only enabled when `CORS_ORIGINS` is set — no wildcard) |
-| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`, `MAX_UPLOAD_MB`, `MAX_ACTIVE_JOBS`, `RENDER_STALL_SECONDS`) |
+| `config.py` | Settings from env / `.env` (`REDIS_URL`, `STORAGE_PATH`, `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE`, `WHISPER_CPU_THREADS`, `VIDEO_ENCODER`, `CLEANUP_DELAY_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`, `MAX_UPLOAD_MB`, `MAX_ACTIVE_JOBS`, `RENDER_STALL_SECONDS`) |
 | `models.py` | SQLAlchemy `Job` model (id, filename, style (nullable), language, status, step, progress, caption placement `position_x/position_y/scale`, error, timestamps) |
 | `schemas.py` | Pydantic models incl. `JobStatus`, `RenderRequest`, `TranscriptResponse`, `StyleInfo` |
 | `database.py` | SQLite engine (WAL + synchronous=NORMAL set on every connect — 4 processes share the file, and WAL keeps the API's status polls from contending with the worker's progress commits), `SessionLocal`, DB dependency for injection |
@@ -83,7 +83,8 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `tasks/silence.py` | Optional, opt-in (`Job.remove_silences`) step run inside phase 1: `detect_silences` (FFmpeg `silencedetect`), `compute_kept_ranges` (pure; pads/merges/caps), `trim_silences` (FFmpeg `trim`/`atrim`+`concat` re-encode — cuts aren't keyframe-aligned, so `-c:v copy` isn't possible), `remap_segments` (pure; re-times every segment/word onto the trimmed timeline) |
 | `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; escapes `{`/`}` and collapses newlines in caption text (both are live ASS syntax, and segment text is user-editable); `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing; `keyword_emphasis` styles pop one semantic word per fixed-size group instead of a trailing block |
 | `tasks/emphasis.py` | `pick_emphasis_word` — NLTK POS-tags a word group and returns the index of the longest noun/verb/adjective (or `None`), used by the Keyword Pop style |
-| `tasks/ffmpeg_burn.py` | `probe_media` — one ffprobe pass for dimensions/duration/audio codec (render_video probes once and threads the `MediaInfo` through); burns ASS captions into video via FFmpeg (re-encodes video; stream-copies audio when already AAC) |
+| `tasks/encoder.py` | Encoder registry + trial-encode probe: `detect_encoder()` picks the best working H.264 encoder (h264_nvenc > h264_qsv > h264_vaapi > libx264) once per process, honoring `VIDEO_ENCODER`; `select_encoder` is the pure, probe-injectable core. Stdlib-only at import time so its unit tests run without the stack |
+| `tasks/ffmpeg_burn.py` | `probe_media` — one ffprobe pass for dimensions/duration/audio codec (render_video probes once and threads the `MediaInfo` through); burns ASS captions into video via FFmpeg (re-encodes video; stream-copies audio when already AAC); burns via the detected encoder, and `burn_subtitles_with_fallback` retries a failed hardware encode once on libx264 |
 | `styles/definitions.py` | 10 style templates (Classic, TikTok Bold, Karaoke, Clean Box, Neon, Minimal, Cinematic, + compound Duo Tone, Mixed Weight & Keyword Pop); `base_font_size()` helper |
 
 ### Processing pipeline (two phases)
@@ -143,6 +144,7 @@ Configuration is optional: copy `.env.example` to `.env` to override defaults. `
 WHISPER_MODEL=base.en         # default; see below
 WHISPER_COMPUTE_TYPE=int8_float32
 WHISPER_CPU_THREADS=0         # 0 = auto-detect physical cores
+VIDEO_ENCODER=auto            # caption-burn encoder: auto-probe hw (nvenc>qsv>vaapi) with libx264 fallback, or force one
 CLEANUP_DELAY_SECONDS=600
 CORS_ORIGINS=                 # comma-separated; empty = same-origin only (no CORS)
 LOG_LEVEL=INFO                # backend + worker log verbosity (DEBUG/INFO/WARNING)
@@ -160,5 +162,7 @@ SILENCE_MAX_SEGMENTS=60       # safety cap on kept-segment count
 Transcription runs on **faster-whisper** (CTranslate2), not the reference openai-whisper/torch stack — 3–4× faster on CPU via AVX2 int8 kernels with near-lossless quality, which is what makes `base.en` practical as the default despite running on CPU. `WHISPER_COMPUTE_TYPE` (default `int8_float32`) trades RAM vs. precision (`int8` < `int8_float32` < `float32`); `WHISPER_CPU_THREADS` (default `0` = auto-detect cores) pins thread count.
 
 The `SILENCE_*` vars only matter when a user checks "Remove silences" at upload — see the pipeline section below.
+
+Hardware-accelerated encoding: `VIDEO_ENCODER=auto` probes for a working GPU encoder at the worker's first render and burns captions with it (visual parity targets vs. libx264 CRF 23). The GPU must be passed into the worker container — opt in with `docker compose -f docker-compose.yml -f docker-compose.hwaccel.yml up` (Intel/AMD `/dev/dri`; see that file's comments for NVIDIA). Without the device (e.g. Docker Desktop on WSL2) every probe fails and the burn uses libx264 exactly as before. A hardware encode that fails on a specific file is retried once with libx264; the job only fails if software encoding also fails.
 
 When run standalone (outside Docker), the backend reads these same variables from a `backend/.env` or the process environment via pydantic-settings.
