@@ -1,10 +1,5 @@
 name: captionator
 
-# Tunables shared by backend, worker, and beat (all run the same image). Values
-# come from the project .env (docker compose reads it automatically for ${VAR}
-# interpolation); the :-defaults apply when a var is unset, so the stack runs
-# with no .env file too. REDIS_URL/STORAGE_PATH are deployment-fixed (they match
-# the compose network and the volume mount) and are intentionally not tunable.
 x-app-env: &app-env
   REDIS_URL: redis://redis:6379/0
   STORAGE_PATH: /storage
@@ -25,6 +20,7 @@ x-app-env: &app-env
 
 services:
   redis:
+    container_name: captionator-redis
     image: redis:7-alpine
     restart: unless-stopped
     healthcheck:
@@ -34,6 +30,7 @@ services:
       retries: 5
 
   backend:
+    container_name: captionator-backend
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
     restart: unless-stopped
@@ -52,6 +49,7 @@ services:
       start_period: 20s
 
   worker:
+    container_name: captionator-worker
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
     command: celery -A app.tasks.celery_app worker --concurrency=1 --loglevel=info
@@ -63,10 +61,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    # Ping the worker over the broker: catches a worker that's alive but can't reach
-    # Redis (a crashed worker exits and is handled by restart, not by health). The
-    # prefork MainProcess answers control pings even while the pool is mid-transcode,
-    # so this stays green during long jobs. $$HOSTNAME -> the worker's node name.
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME -t 10 >/dev/null 2>&1"]
       interval: 30s
@@ -75,32 +69,22 @@ services:
       start_period: 40s
 
   beat:
+    container_name: captionator-beat
     image: ghcr.io/gage006/captionator-backend:${IMAGE_TAG:-latest}
     build: ./backend
-    # --schedule must point somewhere the non-root "app" user can write; the cwd
-    # (/app) is root-owned. The schedule shelf is just last-run bookkeeping, so a
-    # per-container path under /tmp is fine. This matches the in-code default
-    # (celery_app.beat_schedule_filename), which backstops a bare `celery beat`.
+    # --schedule must live somewhere the non-root "app" user can write (/app is root-owned)
     command: celery -A app.tasks.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     restart: unless-stopped
     environment: *app-env
-    # Beat configures the same Celery app, which initializes the SQLite DB on
-    # startup; mount storage so that write lands on the shared DB, not a throwaway
-    # path inside the container.
     volumes:
       - ./backend/storage:/storage
     depends_on:
       redis:
         condition: service_healthy
-    # No healthcheck by design: beat runs as PID 1, so a crash exits the container
-    # and `restart` recovers it; it isn't a worker node, so `inspect ping` can't see
-    # it; and a wedged-but-alive beat only delays cleanup, which sweep_expired_jobs +
-    # the per-job countdown already backstop.
 
   nginx:
+    container_name: captionator
     image: ghcr.io/gage006/captionator-nginx:${IMAGE_TAG:-latest}
-    # Build context is the repo root so the image can compile the frontend
-    # assets (./frontend) and bake them in alongside the edge proxy config.
     build:
       context: .
       dockerfile: nginx/Dockerfile
@@ -110,8 +94,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-    # nginx is now the static layer too (assets baked in), so it owns the probe
-    # the frontend service used to. GET / serves the local index.html.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 30s

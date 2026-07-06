@@ -28,14 +28,24 @@ Built for iOS video uploads but works from any browser.
 Requires Docker and Docker Compose.
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # optional — the stack runs with defaults if you skip this
 docker compose pull
 docker compose up
 ```
 
-Open [http://localhost](http://localhost).
+### Accessing the app
 
-The Whisper model (~150 MB for `base.en`) downloads on first run and is cached in a Docker volume so rebuilds don't re-download it.
+Once the containers are up, open **[http://localhost](http://localhost)** in your browser. The `captionator` container serves the app on port 80 and is the only entry point — everything else (`captionator-backend`, `captionator-worker`, `captionator-beat`, `captionator-redis`) runs behind it on an internal network.
+
+Check that everything is healthy with:
+
+```bash
+docker compose ps
+```
+
+The `captionator` container waits for the backend to pass its health check before starting, so the app is ready to use as soon as it shows `Up`. On the very first run, allow a minute or two: the Whisper model (~150 MB for `base.en`) downloads on first use and is cached in a Docker volume so restarts and rebuilds don't re-download it.
+
+If port 80 is already taken on your machine, change the `ports` mapping on the `nginx` service in `docker-compose.yml` (e.g. `"8080:80"`) and open [http://localhost:8080](http://localhost:8080) instead.
 
 ## Configuration
 

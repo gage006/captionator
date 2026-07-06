@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run inside the worker container after rebuilding (requires espeak-ng):
-#   docker exec captionator-worker-1 bash /app/gen_test_video.sh
+#   docker exec captionator-worker bash /app/gen_test_video.sh
 #
 # Outputs /storage/uploads/test_speech.mp4 — upload this via the UI
 # and choose duo_tone or mixed_weight to verify compound tags in captions.ass.

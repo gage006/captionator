@@ -2,7 +2,7 @@
 Verify _build_compound_events produces inline ASS override tags.
 
 Run inside the worker container:
-  docker exec captionator-worker-1 python /app/test_compound_styles.py
+  docker exec captionator-worker python /app/test_compound_styles.py
 """
 import sys
 sys.path.insert(0, "/app")
