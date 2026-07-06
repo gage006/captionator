@@ -251,6 +251,8 @@ export default function App() {
           </button>
         </div>
       )}
+
+      <footer className="app-footer">v{__APP_VERSION__}</footer>
     </div>
   )
 }

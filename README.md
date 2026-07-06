@@ -47,6 +47,10 @@ The `captionator` container waits for the backend to pass its health check befor
 
 If port 80 is already taken on your machine, change the `ports` mapping on the `nginx` service in `docker-compose.yml` (e.g. `"8080:80"`) and open [http://localhost:8080](http://localhost:8080) instead.
 
+## Releasing
+
+The deployed version is shown in the footer of the app. It comes from `frontend/package.json`, which is the single source of truth: Vite bakes it into the build, and CI refuses to publish a `v*` release tag that doesn't match it. To cut a release, bump the version in `frontend/package.json` and `frontend/package-lock.json`, commit, then tag the commit `v<version>`.
+
 ## Configuration
 
 Edit `.env` before starting:

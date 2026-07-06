@@ -20,6 +20,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The version shown in the app footer comes from frontend/package.json
+      # (baked in by Vite). Refuse to release a tag that doesn't match it, so
+      # the deployed footer can never disagree with the release tag. A short
+      # vX.Y tag is treated as X.Y.0.
+      - name: Verify release tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          case "$tag" in *.*.*) ;; *) tag="$tag.0" ;; esac
+          pkg=$(node -p "require('./frontend/package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} (=$tag) != frontend/package.json version $pkg. Bump package.json (+ lock) before tagging."
+            exit 1
+          fi
+
       # The fixture scripts need ffmpeg on the host (the runner image doesn't
       # ship it).
       - name: Install ffmpeg

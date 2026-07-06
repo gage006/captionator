@@ -277,6 +277,15 @@ h2 {
   font-weight: 600;
 }
 
+/* Footer — deliberately faint version marker */
+.app-footer {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 11px;
+  color: #3a3a3a;
+  user-select: text;
+}
+
 /* Polling */
 .polling-panel {}
 
