@@ -3,8 +3,10 @@ Integration tests for GET /api/preview/{job_id}/source Range handling — requir
 the Docker stack running on http://localhost (see test_e2e_api.py's docstring).
 
 The preview scrubber's <video> element depends on correct 206 semantics to
-seek; the uploaded fixture's bytes are known locally, so every partial
-response can be checked byte-for-byte against the real file.
+seek. The upload-time faststart remux rewrites the container, so the stored
+file is NOT byte-identical to the uploaded fixture — the full 200 body is
+fetched once as ground truth and every partial response is checked
+byte-for-byte against it.
 """
 from pathlib import Path
 
@@ -26,15 +28,18 @@ def test_range_requests_serve_the_exact_requested_bytes(sample_video: Path):
     # The preview route only needs the job row + stored file, both in place as
     # soon as the upload returns — no need to wait for transcription.
     job_id = upload_sample(sample_video)
-    data = sample_video.read_bytes()
-    size = len(data)
     url = _source_url(job_id)
 
-    # No Range: full body, with range support advertised.
+    # No Range: full body, with range support advertised. This is the remuxed
+    # source.mp4, so take it as the reference for every range check below —
+    # the ftyp box at offset 4 confirms it's still a real MP4 container.
     r = httpx.get(url, timeout=30)
     assert r.status_code == 200
     assert r.headers["accept-ranges"] == "bytes"
-    assert r.content == data
+    data = r.content
+    size = len(data)
+    assert size > 0
+    assert data[4:8] == b"ftyp"
 
     # Bounded range.
     r = httpx.get(url, headers={"Range": "bytes=0-99"}, timeout=30)
