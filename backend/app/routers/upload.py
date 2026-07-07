@@ -5,14 +5,12 @@ import os
 import shutil
 import subprocess
 import uuid
-from pathlib import Path
 import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Depends
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Job
 from ..config import settings
-from ..remux import remux_faststart
 from ..schemas import UploadResponse
 from ..tasks.celery_app import celery
 
@@ -134,10 +132,6 @@ async def upload_video(
                 status_code=415,
                 detail="Upload must be a video file with an audio track.",
             )
-
-        remuxed = await asyncio.to_thread(remux_faststart, dest, dest_dir)
-        if remuxed is not None:
-            dest = remuxed
 
         job = Job(
             id=job_id,

@@ -3,19 +3,20 @@ Integration tests for GET /api/preview/{job_id}/source Range handling — requir
 the Docker stack running on http://localhost (see test_e2e_api.py's docstring).
 
 The preview scrubber's <video> element depends on correct 206 semantics to
-seek. The upload-time faststart remux rewrites the container, so the stored
-file is NOT byte-identical to the uploaded fixture — the full 200 body is
-fetched once as ground truth and every partial response is checked
-byte-for-byte against it.
+seek. The served file is no longer byte-identical to the upload (phase 1
+faststart-remuxes browser-safe sources in place, and swaps in a preview.mp4
+sidecar for browser-unsafe codecs), so the test waits for "ready" — after
+which the served file is stable — and checks every partial response
+byte-for-byte against the full served body.
 """
 from pathlib import Path
 
 import httpx
 
 try:
-    from .conftest import upload_sample
+    from .conftest import upload_sample, wait_for_status
 except ImportError:  # pragma: no cover
-    from conftest import upload_sample
+    from conftest import upload_sample, wait_for_status
 
 BASE_URL = "http://localhost"
 
@@ -25,14 +26,15 @@ def _source_url(job_id: str) -> str:
 
 
 def test_range_requests_serve_the_exact_requested_bytes(sample_video: Path):
-    # The preview route only needs the job row + stored file, both in place as
-    # soon as the upload returns — no need to wait for transcription.
+    # Wait for phase 1: until "ready" the worker may still rewrite the source
+    # (in-place faststart remux), which would change the file mid-test.
     job_id = upload_sample(sample_video)
+    wait_for_status(job_id, "ready")
     url = _source_url(job_id)
 
-    # No Range: full body, with range support advertised. This is the remuxed
-    # source.mp4, so take it as the reference for every range check below —
-    # the ftyp box at offset 4 confirms it's still a real MP4 container.
+    # No Range: full body, with range support advertised. This body is the
+    # reference for every partial response below — the ftyp box at offset 4
+    # confirms it's still a real MP4 container.
     r = httpx.get(url, timeout=30)
     assert r.status_code == 200
     assert r.headers["accept-ranges"] == "bytes"
@@ -68,3 +70,8 @@ def test_range_requests_serve_the_exact_requested_bytes(sample_video: Path):
     r = httpx.get(url, headers={"Range": f"bytes={size + 1}-"}, timeout=30)
     assert r.status_code == 416
     assert r.headers["content-range"] == f"bytes */{size}"
+
+    # The served preview must be moov-first (faststart) so browsers get
+    # metadata without fetching the tail — the whole point of the remux.
+    head = httpx.get(url, headers={"Range": "bytes=0-63"}, timeout=30).content
+    assert b"moov" in head, "served preview should have a leading moov box"

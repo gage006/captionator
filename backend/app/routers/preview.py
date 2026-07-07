@@ -4,7 +4,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.orm import Session
+from ..config import settings
 from ..database import get_db
+from ..tasks.transcode import PREVIEW_FILENAME
 from .common import load_job
 
 router = APIRouter()
@@ -25,7 +27,13 @@ def preview_source(job_id: str, request: Request, db: Session = Depends(get_db))
     # Expired jobs 410 like the other file-serving routes (their source is deleted).
     job = load_job(job_id, db)
 
-    path = Path(job.filename)
+    # When the source codec isn't browser-decodable (HEVC phone footage),
+    # phase 1 leaves an H.264 sidecar next to the upload — stream that instead.
+    # The original stays the render source; this file exists only for the
+    # <video> element.
+    path = settings.upload_path / job_id / PREVIEW_FILENAME
+    if not path.exists():
+        path = Path(job.filename)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Source video not found")
 

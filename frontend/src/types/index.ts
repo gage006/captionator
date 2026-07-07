@@ -18,6 +18,7 @@ export type JobStep =
   | 'uploading'
   | 'transcribing'
   | 'removing_silences'
+  | 'preparing_preview'
   | 'preview_ready'
   | 'styling'
   | 'burning'

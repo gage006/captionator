@@ -74,7 +74,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `database.py` | SQLite engine (WAL + synchronous=NORMAL set on every connect — 4 processes share the file, and WAL keeps the API's status polls from contending with the worker's progress commits), `SessionLocal`, DB dependency for injection |
 | `routers/upload.py` | `POST /api/upload` — guards first (size limit via middleware + stream count, ffprobe must find video+audio streams, active-job cap, language code must be `auto` or a Whisper language), then saves file (a failure before the Job row commits deletes the upload dir — nothing DB-driven could ever reap it) (filename sanitized to its basename; job id is a full uuid4 hex), creates Job, enqueues `transcribe_video` (no style at upload) |
 | `routers/jobs.py` | `GET /api/jobs/{job_id}` (status); `GET /api/jobs/{job_id}/transcript` (segments for preview); `PUT /api/jobs/{job_id}/transcript` (edit segment text and/or flag segments `delete: true` — positional against the stored list, count must match as a staleness guard, edited text is whitespace-collapsed and gets evenly re-spaced word timing, ≥1 segment must survive); `POST /api/jobs/{job_id}/render` (start render with style+placement, atomic CAS requiring status ready/complete/failed — also blocks the phase-1 window where transcript.json already exists but silence removal is still running) |
-| `routers/preview.py` | `GET /api/preview/{job_id}/source` — streams the uploaded source video inline (Range-enabled) for the preview scrubber |
+| `routers/preview.py` | `GET /api/preview/{job_id}/source` — streams the uploaded source video inline (Range-enabled) for the preview scrubber; serves the `preview.mp4` sidecar instead when phase 1 left one (browser-undecodable source codec) |
 | `routers/download.py` | `GET /api/download/{job_id}/{file_type}` — streams output files |
 | `routers/styles.py` | `GET /api/styles` — lists caption styles (incl. `base_font_size`) |
 | `tasks/celery_app.py` | Celery app init, broker=Redis, initializes DB on startup |
@@ -82,6 +82,7 @@ Healthchecks: `redis` (`redis-cli ping`), `nginx` (HTTP `GET /` — it's the sta
 | `tasks/transcribe.py` | faster-whisper (CTranslate2) transcription (globally cached model), int8 CPU-quantized with VAD; returns segments with word-level timing. Progress driven off each segment's end time vs. audio duration |
 | `tasks/silence.py` | Optional, opt-in (`Job.remove_silences`) step run inside phase 1: `detect_silences` (FFmpeg `silencedetect`), `compute_kept_ranges` (pure; pads/merges/caps), `trim_silences` (FFmpeg `trim`/`atrim`+`concat` re-encode — cuts aren't keyframe-aligned, so `-c:v copy` isn't possible), `remap_segments` (pure; re-times every segment/word onto the trimmed timeline) |
 | `tasks/ass_generator.py` | Builds ASS subtitle file from segments + style; escapes `{`/`}` and collapses newlines in caption text (both are live ASS syntax, and segment text is user-editable); `build(..., position, scale)` applies a `{\an5\pos(x,y)}` placement override and scales the style font size; handles karaoke word-timing; `keyword_emphasis` styles pop one semantic word per fixed-size group instead of a trailing block |
+| `tasks/transcode.py` | Browser-safe preview handling, run at the end of phase 1: H.264 8-bit sources get a lossless in-place faststart remux; anything a browser can't decode (HEVC phone footage is the common case — Chrome demuxes it but often can't decode a frame, so the preview is black with `videoWidth` 0) gets a throwaway H.264 `preview.mp4` sidecar for the scrubber, while the pristine original stays the render source (no extra lossy generation in the output). Stdlib-only at import time so its unit tests run without the stack |
 | `tasks/emphasis.py` | `pick_emphasis_word` — NLTK POS-tags a word group and returns the index of the longest noun/verb/adjective (or `None`), used by the Keyword Pop style |
 | `tasks/encoder.py` | Encoder registry + trial-encode probe: `detect_encoder()` picks the best working H.264 encoder (h264_nvenc > h264_qsv > h264_vaapi > libx264) once per process, honoring `VIDEO_ENCODER`; `select_encoder` is the pure, probe-injectable core. Stdlib-only at import time so its unit tests run without the stack |
 | `tasks/ffmpeg_burn.py` | `probe_media` — one ffprobe pass for dimensions/duration/audio codec (render_video probes once and threads the `MediaInfo` through); burns ASS captions into video via FFmpeg (re-encodes video; stream-copies audio when already AAC); burns via the detected encoder, and `burn_subtitles_with_fallback` retries a failed hardware encode once on libx264 |
@@ -103,6 +104,10 @@ transcribe_video task (phase 1):
      (failure here fails the whole job and leaves the pre-trim transcript already
      persisted from step 1; the original video is never silently kept as a
      fallback — the job is reported failed, not quietly downgraded)
+  3. Browser-safe preview (step=preparing_preview): H.264 8-bit → lossless
+     in-place faststart remux; other codecs (e.g. HEVC) → encode a preview.mp4
+     sidecar next to the upload (95..99%). Failure only degrades the in-browser
+     preview, never the job  →  status=ready
 
 (user previews + picks style/placement in the editor)
 

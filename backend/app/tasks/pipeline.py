@@ -13,6 +13,13 @@ from .transcribe import transcribe
 from .ass_generator import build as build_ass
 from .ffmpeg_burn import probe_media, get_video_duration, burn_subtitles_with_fallback
 from .silence import detect_silences, compute_kept_ranges, trim_silences, remap_segments
+from .transcode import (
+    PREVIEW_FILENAME,
+    create_preview,
+    is_browser_safe,
+    probe_video_codec,
+    remux_faststart,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +174,37 @@ def transcribe_video(job_id: str) -> None:
                     "silence removal: job=%s removed=%.2fs kept_ranges=%d",
                     job_id, silence_removed_seconds, len(kept_ranges),
                 )
+
+        # Make whatever file the preview scrubber will stream actually
+        # previewable in a browser. Browser-safe video (H.264 8-bit — includes
+        # every silence-trimmed file, since trim re-encodes with libx264) gets
+        # a lossless in-place faststart remux. Anything else (HEVC phone
+        # footage is the big one — Chrome demuxes it but often can't decode a
+        # single frame) gets a throwaway H.264 preview.mp4 sidecar for the
+        # scrubber, while the pristine original stays the render source so the
+        # final output never gains an extra lossy generation.
+        # (no progress value here: a just-finished silence trim already pushed
+        # the bar to 99, and the transcription path leaves it at 95 — never
+        # move it backwards)
+        _update_job(db, job_id, step="preparing_preview")
+        codec, pix_fmt = probe_video_codec(video_path)
+        if is_browser_safe(codec, pix_fmt):
+            remux_faststart(video_path)
+        else:
+            def on_preview_progress(fraction: float) -> None:
+                _update_job(db, job_id, progress=95 + int(fraction * 4))
+
+            preview_path = settings.upload_path / job_id / PREVIEW_FILENAME
+            created = create_preview(
+                video_path,
+                str(preview_path),
+                progress_callback=on_preview_progress,
+                duration=get_video_duration(video_path),
+            )
+            logger.info(
+                "preview transcode (%s/%s -> h264): job=%s ok=%s",
+                codec, pix_fmt, job_id, created,
+            )
 
         _update_job(
             db,

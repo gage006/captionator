@@ -1,10 +1,18 @@
 import type { JobStatus, JobStep } from '../types'
 
-const STEPS: JobStep[] = ['uploading', 'transcribing', 'removing_silences', 'styling', 'burning']
+const STEPS: JobStep[] = [
+  'uploading',
+  'transcribing',
+  'removing_silences',
+  'preparing_preview',
+  'styling',
+  'burning',
+]
 const STEP_LABELS: Record<JobStep, string> = {
   uploading: 'Uploading',
   transcribing: 'Transcribing audio',
   removing_silences: 'Removing silences',
+  preparing_preview: 'Preparing preview',
   preview_ready: 'Ready to edit',
   styling: 'Generating captions',
   burning: 'Burning into video',
